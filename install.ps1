@@ -12,12 +12,10 @@
     Binaries: https://github.com/ProjectAILeap/claude-code-releases
 #>
 
-[CmdletBinding()]
-param(
-    [string]$Version  = "",     # Pin a specific version (e.g. "1.2.3")
-    [switch]$Force,             # Force reinstall even if up to date
-    [switch]$NoVerify           # Skip SHA-256 checksum verification
-)
+# Default parameters (script is run via iex; [CmdletBinding()]/param() not supported in that context)
+if (-not (Get-Variable 'Version'  -ErrorAction SilentlyContinue)) { $Version  = "" }
+if (-not (Get-Variable 'Force'    -ErrorAction SilentlyContinue)) { $Force    = $false }
+if (-not (Get-Variable 'NoVerify' -ErrorAction SilentlyContinue)) { $NoVerify = $false }
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -109,7 +107,8 @@ function Get-LatestVersion {
             $resp = Invoke-WebRequest -Uri $fallbackUrl -Method Head `
                 -TimeoutSec 10 -UseBasicParsing -MaximumRedirection 0 `
                 -ErrorAction SilentlyContinue
-            $location = $resp.Headers["Location"] ?? ""
+            $locationHdr = $resp.Headers["Location"]
+            $location = if ($null -ne $locationHdr) { $locationHdr } else { "" }
             if ($location -match '(\d+\.\d+\.\d+)') { $ver = $Matches[1] }
         } catch {
             if ($_.Exception.Response) {
@@ -207,8 +206,8 @@ function Add-ToUserPath {
 }
 
 function Refresh-SessionPath {
-    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine") ?? ""
-    $user    = [Environment]::GetEnvironmentVariable("Path", "User")   ?? ""
+    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine"); if ($null -eq $machine) { $machine = "" }
+    $user    = [Environment]::GetEnvironmentVariable("Path", "User");    if ($null -eq $user)    { $user    = "" }
     $env:Path = "$machine;$user"
 }
 
