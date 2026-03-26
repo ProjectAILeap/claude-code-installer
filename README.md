@@ -39,6 +39,8 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/cl
 
 **方法一（推荐）：** 下载 [install.bat](https://github.com/ProjectAILeap/claude-code-installer/raw/main/install.bat) 后双击运行
 
+> 仅需这一个文件，脚本会自动从 GitHub 拉取安装程序并执行。
+
 **方法二：** 在 PowerShell 中运行：
 
 ```powershell
