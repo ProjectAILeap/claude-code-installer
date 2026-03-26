@@ -175,25 +175,51 @@ function Invoke-Download {
         [string]$Url,
         [string]$OutFile,
         [string]$Label = "file",
-        [int]$RetryCount = 3
+        [int]$RetryCount = 3,
+        [int]$TimeoutSec = 120
     )
 
     for ($i = 1; $i -le $RetryCount; $i++) {
         Write-Info "Downloading $Label (attempt $i/$RetryCount)..."
         Write-Info "  URL: $Url"
-        try {
-            Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+        Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
+
+        # Use Start-Job so Wait-Job -Timeout provides a true hard timeout.
+        # -TimeoutSec on Invoke-WebRequest only applies to connect/headers in PS 5.1;
+        # it does not abort a stalled mid-transfer.
+        $job = Start-Job -ScriptBlock {
+            param($u, $out)
+            $ProgressPreference = 'SilentlyContinue'
+            Invoke-WebRequest -Uri $u -OutFile $out -UseBasicParsing -ErrorAction Stop
+        } -ArgumentList $Url, $OutFile
+
+        $finished = Wait-Job $job -Timeout $TimeoutSec
+
+        if ($finished -and $job.State -eq 'Completed') {
+            Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
             if (Test-Path $OutFile) {
                 Unblock-File -Path $OutFile -ErrorAction SilentlyContinue
                 $sizeMB = [math]::Round((Get-Item $OutFile).Length / 1MB, 1)
                 Write-Ok "Downloaded $Label ($sizeMB MB)"
+                return $true
             }
-            return $true
-        } catch {
-            Write-Warn "  Attempt $i failed: $($_.Exception.Message)"
+            Write-Warn "  Attempt $i: job completed but output file missing."
+        } else {
+            $errMsg = ""
+            if ($job.State -eq 'Failed') {
+                $errMsg = "$( (Receive-Job $job -ErrorAction SilentlyContinue 2>&1) )"
+            }
+            Stop-Job  $job -ErrorAction SilentlyContinue
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
             Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
-            if ($i -lt $RetryCount) { Start-Sleep -Seconds 2 }
+            if ($errMsg) {
+                Write-Warn "  Attempt $i failed: $errMsg"
+            } else {
+                Write-Warn "  Attempt $i timed out after ${TimeoutSec}s."
+            }
         }
+        if ($i -lt $RetryCount) { Start-Sleep -Seconds 2 }
     }
     return $false
 }
