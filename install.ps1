@@ -185,16 +185,16 @@ function Invoke-Download {
         Write-Info "Downloading $Label (attempt $i/$RetryCount)..."
         Write-Info "  URL: $Url"
         try {
-            if (Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue) {
-                Start-BitsTransfer -Source $Url -Destination $OutFile `
-                    -DisplayName $Label -ErrorAction Stop
-            } else {
-                $wc = New-Object System.Net.WebClient
-                $wc.DownloadFile($Url, $OutFile)
+            # Invoke-WebRequest -OutFile shows terminal progress bar in PS 5.1
+            Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -ErrorAction Stop
+            if (Test-Path $OutFile) {
+                $sizeMB = [math]::Round((Get-Item $OutFile).Length / 1MB, 1)
+                Write-Ok "Downloaded $Label ($sizeMB MB)"
             }
             return $true
         } catch {
             Write-Warn "  Attempt $i failed: $($_.Exception.Message)"
+            Remove-Item $OutFile -Force -ErrorAction SilentlyContinue
             if ($i -lt $RetryCount) { Start-Sleep -Seconds 2 }
         }
     }
