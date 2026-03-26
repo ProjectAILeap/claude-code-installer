@@ -620,16 +620,23 @@ function Main {
             if ($ckOk) { Copy-Item $ckFile $cachedCk -Force -ErrorAction SilentlyContinue }
         }
 
-        # Use cached binary if present and checksum passes; otherwise download
+        # Use cached binary if present; verify checksum if available
         $needDownload = $true
         if (Test-Path $cachedBin) {
-            if ($ckOk -and (Test-Checksum -FilePath $cachedBin -ChecksumFile $ckFile -FileName $fileName)) {
-                Write-Step "Using cached $fileName (checksum OK)..."
+            if ($ckOk) {
+                if (Test-Checksum -FilePath $cachedBin -ChecksumFile $ckFile -FileName $fileName) {
+                    Write-Step "Using cached $fileName (checksum OK)..."
+                    Copy-Item $cachedBin $binFile -Force
+                    $needDownload = $false
+                } else {
+                    Write-Warn "Cached file checksum mismatch, re-downloading..."
+                    Remove-Item $cachedBin -Force -ErrorAction SilentlyContinue
+                }
+            } else {
+                # Checksum file unavailable — reuse cache without verification
+                Write-Step "Using cached $fileName (checksum unavailable, skipping verification)..."
                 Copy-Item $cachedBin $binFile -Force
                 $needDownload = $false
-            } else {
-                Write-Info "Cached file missing or corrupt, re-downloading..."
-                Remove-Item $cachedBin -Force -ErrorAction SilentlyContinue
             }
         }
 
