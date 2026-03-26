@@ -56,44 +56,47 @@ function Exit-WithError {
 $global:SelectedMirror = ""
 
 function Select-Mirror {
-    Write-Step "Selecting fastest mirror..."
+    Write-Step "Testing mirror speeds..."
     $testPath = "/$RELEASES_REPO/releases"
 
-    # Use Start-Job for reliable TCP-level timeout (TimeoutSec alone hangs in PS 5.1)
+    # Launch all mirror checks in parallel for speed comparison
+    $jobs = @()
     foreach ($m in $MIRRORS) {
         $url = "$m$testPath"
-        $j = Start-Job -ScriptBlock {
-            param($u)
+        $jobs += Start-Job -ScriptBlock {
+            param($mirror, $u)
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
             try {
                 $r = Invoke-WebRequest -Uri $u -Method Head -TimeoutSec 6 -UseBasicParsing -ErrorAction Stop
-                $r.StatusCode
+                $sw.Stop()
+                [PSCustomObject]@{ Mirror = $mirror; Ms = $sw.ElapsedMilliseconds; Ok = ($r.StatusCode -lt 400) }
             } catch {
-                if ($_.Exception.Response) { $_.Exception.Response.StatusCode.value__ } else { 0 }
+                $sw.Stop()
+                $ok = if ($_.Exception.Response) { $_.Exception.Response.StatusCode.value__ -lt 400 } else { $false }
+                [PSCustomObject]@{ Mirror = $mirror; Ms = 99999; Ok = $ok }
             }
-        } -ArgumentList $url
-
-        $ok = $false
-        if (Wait-Job $j -Timeout 8) {
-            $code = Receive-Job $j -ErrorAction SilentlyContinue
-            if ($code -and [int]$code -gt 0 -and [int]$code -lt 400) { $ok = $true }
-        }
-        Remove-Job $j -Force -ErrorAction SilentlyContinue
-
-        if ($ok) {
-            $global:SelectedMirror = $m
-            if ($m -eq "https://github.com") {
-                Write-Ok "Direct: github.com"
-            } else {
-                Write-Ok "Mirror: $($m -replace 'https://([^/]+)/.*','$1')"
-            }
-            return
-        }
-        Write-Info "  Unreachable: $($m -replace 'https://([^/]+)/.*','$1')"
+        } -ArgumentList $m, $url
     }
 
-    # All HEAD checks failed — default to ghfast.top and let download fallback handle it
-    $global:SelectedMirror = "https://ghfast.top/https://github.com"
-    Write-Warn "All mirror checks timed out. Defaulting to ghfast.top — will try all mirrors during download."
+    $jobs | Wait-Job -Timeout 10 | Out-Null
+    $results = $jobs | ForEach-Object {
+        if ($_.State -eq 'Completed') { Receive-Job $_ -ErrorAction SilentlyContinue }
+    } | Where-Object { $_ -and $_.Ok } | Sort-Object Ms
+    $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+
+    if ($results -and $results.Count -gt 0) {
+        $best = $results[0]
+        $global:SelectedMirror = $best.Mirror
+        $tag = $best.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
+        Write-Ok "Fastest: $tag ($($best.Ms) ms)"
+        foreach ($r in ($results | Select-Object -Skip 1)) {
+            $t = $r.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
+            Write-Info "  $t ($($r.Ms) ms)"
+        }
+    } else {
+        $global:SelectedMirror = "https://ghfast.top/https://github.com"
+        Write-Warn "All mirror checks timed out. Defaulting to ghfast.top."
+    }
 }
 
 function Get-DownloadUrl {
