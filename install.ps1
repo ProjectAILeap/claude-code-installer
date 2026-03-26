@@ -597,10 +597,10 @@ function Main {
     }
 
     # 6. Download Claude Code binary
-    Write-Step "Downloading claude-$targetVersion-win32-x64.exe..."
     $fileName = "claude-$targetVersion-win32-x64.exe"
     $dlPath   = "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
     $ckPath   = "/$RELEASES_REPO/releases/download/v$targetVersion/sha256sums.txt"
+    $cachedBin = "$env:TEMP\$fileName"
 
     $tmpDir  = [System.IO.Path]::GetTempPath() + [System.Guid]::NewGuid().ToString()
     New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
@@ -609,8 +609,16 @@ function Main {
     $ckFile  = "$tmpDir\sha256sums.txt"
 
     try {
-        if (-not (Invoke-DownloadMirror -Path $dlPath -OutFile $binFile -Label "Claude Code binary")) {
-            Exit-WithError "Download failed. Try a different mirror or check your connection."
+        if (Test-Path $cachedBin) {
+            Write-Step "Using cached $fileName..."
+            Copy-Item $cachedBin $binFile -Force
+        } else {
+            Write-Step "Downloading $fileName..."
+            if (-not (Invoke-DownloadMirror -Path $dlPath -OutFile $binFile -Label "Claude Code binary")) {
+                Exit-WithError "Download failed. Try a different mirror or check your connection."
+            }
+            # Cache for potential re-runs
+            Copy-Item $binFile $cachedBin -Force -ErrorAction SilentlyContinue
         }
 
         # 7. Checksum
