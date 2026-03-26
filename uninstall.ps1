@@ -3,16 +3,22 @@
     Claude Code Windows Uninstaller -- ProjectAILeap
 .DESCRIPTION
     Interactively removes Claude Code components installed by install.ps1.
-    Handles: binary, PATH, config, CC Switch, ANTHROPIC_* environment variables.
+    Handles both install locations:
+      - Official: ~/.local/bin/claude.exe  (via claude install)
+      - Fallback: %LOCALAPPDATA%\Programs\ClaudeCode\claude.exe
+    Also handles: PATH, config, downloads cache, CC Switch, ANTHROPIC_* env vars.
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$INSTALL_DIR        = "$env:LOCALAPPDATA\Programs\ClaudeCode"
-$CLAUDE_EXE         = "$INSTALL_DIR\claude.exe"
-$VERSION_FILE       = "$INSTALL_DIR\version.txt"
-$CLAUDE_CONFIG_DIR  = "$env:USERPROFILE\.claude"
+# Possible install locations
+$OFFICIAL_BIN_DIR  = "$env:USERPROFILE\.local\bin"
+$OFFICIAL_EXE      = "$OFFICIAL_BIN_DIR\claude.exe"
+$FALLBACK_DIR      = "$env:LOCALAPPDATA\Programs\ClaudeCode"
+$FALLBACK_EXE      = "$FALLBACK_DIR\claude.exe"
+$DOWNLOAD_CACHE    = "$env:USERPROFILE\.claude\downloads"
+$CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude"
 $CLAUDE_CONFIG_FILE = "$env:USERPROFILE\.claude.json"
 
 function Write-Step { param($msg) Write-Host "`n>> $msg" -ForegroundColor Cyan }
@@ -29,7 +35,8 @@ function Ask-YesNo {
 function Remove-FromUserPath {
     param([string]$Dir)
     $current = [Environment]::GetEnvironmentVariable("Path", "User")
-    $parts   = $current -split ";" | Where-Object { $_ -ne $Dir -and $_ -ne "" }
+    if ($null -eq $current) { return }
+    $parts = $current -split ";" | Where-Object { $_ -ne $Dir -and $_ -ne "" }
     [Environment]::SetEnvironmentVariable("Path", ($parts -join ";"), "User")
     Write-Ok "Removed from user PATH: $Dir"
 }
@@ -49,8 +56,6 @@ function Find-CcSwitch {
         "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
         "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
     )
-    # Use PSObject.Properties to safely access DisplayName under StrictMode
-    # (some registry entries lack this property and would throw otherwise)
     return Get-ItemProperty $registryPaths -ErrorAction SilentlyContinue |
         Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like "*CC Switch*" } |
         Select-Object -First 1
@@ -60,14 +65,12 @@ function Uninstall-CcSwitch {
     param($CcEntry)
     Write-Info "Uninstalling CC Switch..."
     try {
-        # Try ProductCode uninstall first
         $productCode = $CcEntry.PSChildName
         if ($productCode -match '^\{') {
             $proc = Start-Process -FilePath "msiexec.exe" `
                 -ArgumentList "/x `"$productCode`" /qn /norestart" `
                 -Wait -PassThru -ErrorAction Stop
         } else {
-            # Use UninstallString
             $uninstStr = $CcEntry.UninstallString
             $proc = Start-Process -FilePath "msiexec.exe" `
                 -ArgumentList ($uninstStr -replace 'msiexec\.exe\s*', '') + " /qn /norestart" `
@@ -88,51 +91,78 @@ function Main {
     Write-Host "=== Claude Code Windows Uninstaller ===  ProjectAILeap" -ForegroundColor Cyan
     Write-Host ""
 
-    # Detect installation
-    $installedVersion = ""
-    if (Test-Path $VERSION_FILE) {
-        $installedVersion = (Get-Content $VERSION_FILE -Raw).Trim()
+    # Detect install locations
+    $foundExes = @()
+    if (Test-Path $OFFICIAL_EXE)  { $foundExes += $OFFICIAL_EXE }
+    if (Test-Path $FALLBACK_EXE)  { $foundExes += $FALLBACK_EXE }
+
+    # Also detect via Get-Command in case installed elsewhere
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    if ($claudeCmd -and ($foundExes -notcontains $claudeCmd.Source)) {
+        $foundExes += $claudeCmd.Source
     }
 
-    $hasInstall = (Test-Path $CLAUDE_EXE) -or $installedVersion
+    $hasInstall = $foundExes.Count -gt 0
     if (-not $hasInstall) {
         Write-Warn "Claude Code does not appear to be installed."
         Write-Info "Nothing to remove."
         exit 0
     }
 
-    # Detect CC Switch
-    $ccEntry = Find-CcSwitch
+    # Detect version
+    $installedVersion = ""
+    if ($claudeCmd) {
+        try {
+            $out = & $claudeCmd.Source --version 2>&1
+            if ("$out" -match '(\d+\.\d+\.\d+)') { $installedVersion = $Matches[1] }
+        } catch {}
+    }
 
-    # Detect ANTHROPIC user env vars
+    # Detect other components
+    $ccEntry      = Find-CcSwitch
+    $userPath     = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($null -eq $userPath) { $userPath = "" }
     $anthropicKeys = @("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL") |
-        Where-Object { [Environment]::GetEnvironmentVariable($_, "User") -ne $null }
+        Where-Object { $null -ne [Environment]::GetEnvironmentVariable($_, "User") }
 
     Write-Step "Detected installation"
-    if ($installedVersion) { Write-Info "  Version:     v$installedVersion" }
-    if (Test-Path $CLAUDE_EXE) { Write-Info "  Binary:      $CLAUDE_EXE" }
-    Write-Info "  Install dir: $INSTALL_DIR"
-    if ($ccEntry) { Write-Info "  CC Switch:   $($ccEntry.DisplayName) v$($ccEntry.DisplayVersion)" }
-    if ($anthropicKeys) { Write-Info "  ANTHROPIC_*: $($anthropicKeys -join ', ') (user env)" }
+    if ($installedVersion) { Write-Info "Version:  v$installedVersion" }
+    foreach ($exe in $foundExes) { Write-Info "Binary:   $exe" }
+    if (Test-Path $DOWNLOAD_CACHE) { Write-Info "Cache:    $DOWNLOAD_CACHE" }
+    if ($ccEntry) { Write-Info "CC Switch: $($ccEntry.DisplayName) v$($ccEntry.DisplayVersion)" }
+    if ($anthropicKeys) { Write-Info "ANTHROPIC_*: $($anthropicKeys -join ', ') (user env)" }
     Write-Host ""
 
     # Collect choices
-    $removeBinary      = $false
-    $removeDir         = $false
-    $removePath        = $false
+    $removeBinaries    = @()
+    $removeDirs        = @()
+    $removePathDirs    = @()
+    $removeCache       = $false
     $removeConfig      = $false
     $removeCcSwitch    = $false
     $removeAnthropicEnv = $false
 
-    if (Test-Path $CLAUDE_EXE) {
-        $removeBinary = Ask-YesNo "Remove Claude Code binary ($CLAUDE_EXE)?"
+    foreach ($exe in $foundExes) {
+        if (Ask-YesNo "Remove Claude Code binary ($exe)?") {
+            $removeBinaries += $exe
+            $dir = Split-Path $exe -Parent
+            if ($dir -ne $OFFICIAL_BIN_DIR -or -not (Get-ChildItem $dir -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "claude.exe" })) {
+                if (Test-Path $dir) {
+                    if (Ask-YesNo "  Also remove directory ($dir)?") {
+                        $removeDirs += $dir
+                    }
+                }
+            }
+            if ($userPath.Contains($dir) -and ($removePathDirs -notcontains $dir)) {
+                if (Ask-YesNo "  Remove $dir from user PATH?") {
+                    $removePathDirs += $dir
+                }
+            }
+        }
     }
-    if (Test-Path $INSTALL_DIR) {
-        $removeDir = Ask-YesNo "Remove install directory ($INSTALL_DIR)?"
-    }
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath -and $userPath.Contains($INSTALL_DIR)) {
-        $removePath = Ask-YesNo "Remove $INSTALL_DIR from user PATH?"
+
+    if (Test-Path $DOWNLOAD_CACHE) {
+        $removeCache = Ask-YesNo "Remove downloads cache ($DOWNLOAD_CACHE)?"
     }
     if ((Test-Path $CLAUDE_CONFIG_DIR) -or (Test-Path $CLAUDE_CONFIG_FILE)) {
         $removeConfig = Ask-YesNo "Remove Claude configuration (~\.claude\ and ~\.claude.json)?"
@@ -145,7 +175,7 @@ function Main {
     }
 
     # Check anything selected
-    $anySelected = $removeBinary -or $removeDir -or $removePath -or $removeConfig `
+    $anySelected = ($removeBinaries.Count -gt 0) -or $removeCache -or $removeConfig `
                    -or $removeCcSwitch -or $removeAnthropicEnv
     if (-not $anySelected) {
         Write-Host "`nNothing selected. Exiting."
@@ -155,11 +185,12 @@ function Main {
     # Summary
     Write-Host ""
     Write-Host "The following will be removed:" -ForegroundColor Yellow
-    if ($removeBinary)       { Write-Host "  - Binary:          $CLAUDE_EXE" }
-    if ($removeDir)          { Write-Host "  - Install dir:     $INSTALL_DIR" }
-    if ($removePath)         { Write-Host "  - PATH entry:      $INSTALL_DIR" }
-    if ($removeConfig)       { Write-Host "  - Config:          $CLAUDE_CONFIG_DIR  +  $CLAUDE_CONFIG_FILE" }
-    if ($removeCcSwitch)     { Write-Host "  - CC Switch" }
+    foreach ($exe in $removeBinaries)  { Write-Host "  - Binary:    $exe" }
+    foreach ($dir in $removeDirs)      { Write-Host "  - Directory: $dir" }
+    foreach ($dir in $removePathDirs)  { Write-Host "  - PATH entry: $dir" }
+    if ($removeCache)       { Write-Host "  - Cache:     $DOWNLOAD_CACHE" }
+    if ($removeConfig)      { Write-Host "  - Config:    $CLAUDE_CONFIG_DIR  +  $CLAUDE_CONFIG_FILE" }
+    if ($removeCcSwitch)    { Write-Host "  - CC Switch" }
     if ($removeAnthropicEnv) { Write-Host "  - ANTHROPIC_* user environment variables" }
     Write-Host ""
 
@@ -170,20 +201,29 @@ function Main {
 
     Write-Step "Removing..."
 
-    if ($removeBinary -and (Test-Path $CLAUDE_EXE)) {
-        Get-Process -Name "claude" -ErrorAction SilentlyContinue |
-            Stop-Process -Force -ErrorAction SilentlyContinue
-        Remove-Item $CLAUDE_EXE -Force
-        Write-Ok "Removed: $CLAUDE_EXE"
+    foreach ($exe in $removeBinaries) {
+        if (Test-Path $exe) {
+            Get-Process -Name "claude" -ErrorAction SilentlyContinue |
+                Stop-Process -Force -ErrorAction SilentlyContinue
+            Remove-Item $exe -Force
+            Write-Ok "Removed: $exe"
+        }
     }
 
-    if ($removeDir -and (Test-Path $INSTALL_DIR)) {
-        Remove-Item $INSTALL_DIR -Recurse -Force
-        Write-Ok "Removed: $INSTALL_DIR"
+    foreach ($dir in $removeDirs) {
+        if (Test-Path $dir) {
+            Remove-Item $dir -Recurse -Force
+            Write-Ok "Removed: $dir"
+        }
     }
 
-    if ($removePath) {
-        Remove-FromUserPath $INSTALL_DIR
+    foreach ($dir in $removePathDirs) {
+        Remove-FromUserPath $dir
+    }
+
+    if ($removeCache -and (Test-Path $DOWNLOAD_CACHE)) {
+        Remove-Item $DOWNLOAD_CACHE -Recurse -Force
+        Write-Ok "Removed: $DOWNLOAD_CACHE"
     }
 
     if ($removeConfig) {
