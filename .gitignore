@@ -1,0 +1,15 @@
+# Temporary downloads
+downloads/
+tmp/
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
