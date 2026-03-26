@@ -49,8 +49,10 @@ function Find-CcSwitch {
         "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
         "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
     )
+    # Use PSObject.Properties to safely access DisplayName under StrictMode
+    # (some registry entries lack this property and would throw otherwise)
     return Get-ItemProperty $registryPaths -ErrorAction SilentlyContinue |
-        Where-Object { $_.DisplayName -like "*CC Switch*" } |
+        Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like "*CC Switch*" } |
         Select-Object -First 1
 }
 
