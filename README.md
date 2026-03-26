@@ -3,19 +3,19 @@
 > **AI跃迁计划 · ProjectAILeap**
 >
 > 无需 npm，直接下载官方二进制，支持 GitHub 镜像加速，适配中国网络环境。
-> Install Claude Code without npm — downloads official binaries with mirror acceleration.
+> Install Claude Code without npm — downloads official binaries with mirror acceleration for China.
 
 ---
 
 ## 平台支持 / Platform Support
 
-| 操作系统 | 架构 | 支持 |
-|---------|------|------|
-| Windows | x64  | ✅ |
-| macOS   | Apple Silicon (arm64) | ✅ |
-| macOS   | Intel (x64) | ✅ |
-| Linux   | x64 (glibc / musl) | ✅ |
-| Linux   | ARM64 (glibc / musl) | ✅ |
+| 操作系统 | 架构 | Claude Code | CC Switch |
+|---------|------|:-----------:|:---------:|
+| Windows | x64  | ✅ | ✅ MSI |
+| macOS   | Apple Silicon (arm64) | ✅ | ✅ Universal |
+| macOS   | Intel (x64) | ✅ | ✅ Universal |
+| Linux   | x64 (glibc / musl) | ✅ | ✅ AppImage |
+| Linux   | ARM64 (glibc / musl) | ✅ | ✅ AppImage |
 
 二进制来源：[ProjectAILeap/claude-code-releases](https://github.com/ProjectAILeap/claude-code-releases)（官方二进制镜像存档，未做任何修改）
 
@@ -26,7 +26,7 @@
 ### macOS / Linux
 
 ```bash
-# 直连（境外网络）
+# 直连（境外网络 / 有代理）
 curl -fsSL https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/install.sh | bash
 
 # 镜像加速（中国大陆推荐）
@@ -37,8 +37,9 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/cl
 
 ### Windows
 
-1. **方法一（推荐）：** 下载 [`install.bat`](https://github.com/ProjectAILeap/claude-code-installer/releases/latest) 后双击运行
-2. **方法二：** 在 PowerShell 中运行：
+**方法一（推荐）：** 下载 [install.bat](https://github.com/ProjectAILeap/claude-code-installer/raw/main/install.bat) 后双击运行
+
+**方法二：** 在 PowerShell 中运行：
 
 ```powershell
 # 直连
@@ -52,9 +53,36 @@ irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-co
 
 ---
 
+## 安装过程说明
+
+脚本会自动完成以下步骤，**全程无需手动干预**：
+
+| 步骤 | 说明 |
+|------|------|
+| 1. 检测版本 | 从 GitHub Releases 获取最新版本号 |
+| 2. 选择镜像 | 自动测速，选最快可用的 GitHub 镜像源 |
+| 3. 安装 Git（仅 Windows） | 未安装时自动下载安装 Git for Windows |
+| 4. 下载二进制 | 下载 Claude Code 官方二进制，验证 SHA-256 |
+| 5. 配置 PATH | 将安装目录加入用户 PATH |
+| 6. 安装 CC Switch（可选） | 询问是否安装 API Provider 切换工具 |
+| 7. 配置 API 访问 | 根据网络环境自动引导配置，确保能直接进入 Claude Code |
+
+### API 访问配置逻辑
+
+安装脚本会自动探测网络环境并分支处理，**保证安装完成后可直接运行 `claude`**：
+
+| 场景 | 处理方式 |
+|------|---------|
+| 已有 `ANTHROPIC_API_KEY` | 跳过，保留现有配置 |
+| 安装了 CC Switch | 写入占位配置，启动 CC Switch 完成 Provider 选择即可 |
+| 可直连 Anthropic API | 提示输入真实 API Key，写入环境变量 |
+| 无法直连 + 未装 CC Switch | 提示配置建议，写入 onboarding 跳过标记 |
+
+---
+
 ## 镜像加速说明
 
-脚本内置多个 GitHub 镜像，自动测速并选择最快可用源：
+脚本内置 5 个 GitHub 镜像源，自动测速选最快可用源（无需手动配置）：
 
 | 镜像 | 类型 |
 |------|------|
@@ -64,19 +92,37 @@ irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-co
 | mirror.ghproxy.com | 代理镜像 |
 | kkgithub.com | 域名镜像 |
 
-无需手动配置，脚本自动检测网络可达性。
+---
+
+## CC Switch（可选）
+
+[CC Switch](https://github.com/farion1231/cc-switch) 是一个 GUI 工具，支持一键切换 Claude Code 的 API Provider，适合国内用户使用第三方 API（DeepSeek、Kimi、GLM、Aliyun 等）。
+
+安装脚本末尾会询问是否安装，选 `y` 自动下载对应平台版本：
+
+| 平台 | 安装格式 | 位置 |
+|------|---------|------|
+| Windows | MSI 安装包 | 开始菜单 / 桌面 |
+| macOS | tar.gz → .app | `/Applications/CC Switch.app` |
+| Linux | AppImage | 与 `claude` 同目录，运行 `cc-switch` |
+
+**使用流程（中国大陆用户推荐）：**
+1. 安装时选择安装 CC Switch
+2. 安装完成后，脚本自动写入占位 Provider 配置（无需手动设置 Key）
+3. 打开 CC Switch，选择 Provider（如 DeepSeek），输入 API Key
+4. 运行 `claude` 即可使用
 
 ---
 
 ## 升级 / Upgrade
 
-重新运行安装脚本即可。脚本会自动检测已安装版本，仅在有新版本时才下载。
+重新运行安装脚本即可。脚本自动检测已安装版本，仅在有新版本时下载。
 
 ```bash
 # macOS / Linux
 curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/install.sh | bash
 
-# Windows：重新双击 install.bat 或运行 install.ps1
+# Windows：重新双击 install.bat
 ```
 
 ---
@@ -86,64 +132,74 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/cl
 ### macOS / Linux
 
 ```bash
+# 克隆仓库后运行
+bash uninstall.sh
+
+# 或直接运行（需 curl 可访问 raw.githubusercontent.com）
 curl -fsSL https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/uninstall.sh | bash
-# 或克隆仓库后运行 bash uninstall.sh
 ```
 
 ### Windows
 
 双击 `uninstall.bat`，或在 PowerShell 中运行 `.\uninstall.ps1`。
 
-卸载时可选择保留或删除：
-- Claude Code 可执行文件
-- 数据/版本目录
+卸载时可交互选择删除：
+
+- Claude Code 二进制
+- 安装目录
 - PATH 条目
-- `~/.claude/` 配置目录
+- `~/.claude/` 配置目录 / `~/.claude.json`
 - CC Switch（若已安装）
-
----
-
-## CC Switch（可选）
-
-[CC Switch](https://github.com/farion1231/cc-switch) 是一个 GUI 工具，支持一键切换 Claude Code 的 API Provider（DeepSeek、Kimi、GLM 等），适合国内用户使用第三方 API。
-
-- **Windows**：安装脚本末尾会询问是否安装，选 `y` 自动下载 MSI 安装包
-- **macOS / Linux**：CC Switch 目前仅提供 Windows 版本，请手动访问 [releases 页面](https://github.com/farion1231/cc-switch/releases)
+- `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` 环境变量
 
 ---
 
 ## 安装位置
 
-| 平台 | 路径 |
-|------|------|
-| Windows | `%LOCALAPPDATA%\Programs\ClaudeCode\claude.exe` |
-| macOS | `/usr/local/bin/claude` 或 `~/.local/bin/claude` |
-| Linux | `~/.local/bin/claude` |
+| 平台 | Claude Code | 版本记录 |
+|------|------------|---------|
+| Windows | `%LOCALAPPDATA%\Programs\ClaudeCode\claude.exe` | 同目录 `version.txt` |
+| macOS | `/usr/local/bin/claude` 或 `~/.local/bin/claude` | `~/.local/share/claude-code/version` |
+| Linux | `~/.local/bin/claude` | `~/.local/share/claude-code/version` |
 
-版本记录：
-- Windows: `%LOCALAPPDATA%\Programs\ClaudeCode\version.txt`
-- macOS / Linux: `~/.local/share/claude-code/version`
+---
+
+## 系统要求
+
+| 平台 | 要求 |
+|------|------|
+| Windows | PowerShell 5.1+（系统自带）；Git 自动安装（若缺失） |
+| macOS | curl（系统自带）；Git 缺失时系统会提示安装 Xcode CLT |
+| Linux | curl、bash；需预先安装 Git（`apt/yum/pacman install git`） |
+
+无需 Node.js、npm 或管理员权限。
 
 ---
 
 ## 本地安装（无网络）
 
-1. 从 [claude-code-releases](https://github.com/ProjectAILeap/claude-code-releases/releases) 手动下载二进制
+1. 从 [claude-code-releases](https://github.com/ProjectAILeap/claude-code-releases/releases) 手动下载对应平台二进制
 2. 重命名为 `claude`（Linux/macOS）或 `claude.exe`（Windows）
-3. 放入 PATH 下的目录并赋予执行权限（Linux/macOS: `chmod +x claude`）
+3. 放入 PATH 中的目录，赋予执行权限（Linux/macOS: `chmod +x claude`）
 
 ---
 
 ## 常见问题
 
 **Q: 与 npm 安装方式冲突吗？**
-> 不冲突。本方案安装到独立目录，与 npm 全局安装互不干扰。但建议统一使用一种方式避免版本混乱。
+> 不冲突。本方案安装到独立目录，与 npm 全局安装互不干扰。建议统一使用一种方式避免版本混乱。
 
 **Q: 需要管理员权限吗？**
-> 不需要。Windows 安装到用户目录 `%LOCALAPPDATA%`，macOS/Linux 默认安装到 `~/.local/bin`，均无需 root/管理员。
+> 不需要。Windows 安装到用户目录 `%LOCALAPPDATA%`，macOS/Linux 默认安装到 `~/.local/bin`，均无需 root/管理员权限。
+
+**Q: Windows 上没有安装 Git 怎么办？**
+> 安装脚本会自动检测并安装 Git for Windows（优先从 npmmirror 下载，速度快），无需手动操作。
 
 **Q: 如何验证二进制完整性？**
-> 脚本自动下载 `sha256sums.txt` 并验证 SHA-256 校验和。校验文件来源与二进制相同。
+> 脚本自动下载 `sha256sums.txt` 并验证 SHA-256 校验和，与二进制使用相同镜像源下载。
+
+**Q: 安装完提示无法连接 Anthropic API 怎么办？**
+> 中国大陆直连 api.anthropic.com 通常不可用。建议安装 CC Switch 并配置国内 Provider（DeepSeek 等）。
 
 ---
 
