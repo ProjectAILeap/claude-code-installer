@@ -53,7 +53,7 @@ function Exit-WithError {
 }
 
 # ── Mirror selection ──────────────────────────────────────────────────────────
-$SelectedMirror = ""
+$global:SelectedMirror = ""
 
 function Select-Mirror {
     Write-Step "Selecting fastest mirror..."
@@ -65,7 +65,7 @@ function Select-Mirror {
             $resp = Invoke-WebRequest -Uri $url -Method Head `
                 -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop
             if ($resp.StatusCode -lt 400) {
-                $script:SelectedMirror = $m
+                $global:SelectedMirror = $m
                 if ($m -eq "https://github.com") {
                     Write-Ok "Direct: github.com"
                 } else {
@@ -82,7 +82,7 @@ function Select-Mirror {
 
 function Get-DownloadUrl {
     param([string]$Path)
-    return "$SelectedMirror$Path"
+    return "$global:SelectedMirror$Path"
 }
 
 # ── Fetch Claude Code latest version ─────────────────────────────────────────
