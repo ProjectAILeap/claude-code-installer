@@ -670,6 +670,9 @@ function Main {
         }
         Copy-Item $binFile $CLAUDE_EXE -Force
         Remove-Item "$CLAUDE_EXE.old" -Force -ErrorAction SilentlyContinue
+        # Remove Zone.Identifier (Mark-of-the-Web) so Windows runs it directly
+        # without "How do you want to open this file?" or SmartScreen prompts
+        Unblock-File -Path $CLAUDE_EXE -ErrorAction SilentlyContinue
         Set-Content -Path $VERSION_FILE -Value $targetVersion -Encoding UTF8
         Write-Ok "Installed: $CLAUDE_EXE"
 
