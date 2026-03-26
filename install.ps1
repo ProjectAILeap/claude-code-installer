@@ -59,25 +59,41 @@ function Select-Mirror {
     Write-Step "Selecting fastest mirror..."
     $testPath = "/$RELEASES_REPO/releases"
 
+    # Use Start-Job for reliable TCP-level timeout (TimeoutSec alone hangs in PS 5.1)
     foreach ($m in $MIRRORS) {
         $url = "$m$testPath"
-        try {
-            $resp = Invoke-WebRequest -Uri $url -Method Head `
-                -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop
-            if ($resp.StatusCode -lt 400) {
-                $global:SelectedMirror = $m
-                if ($m -eq "https://github.com") {
-                    Write-Ok "Direct: github.com"
-                } else {
-                    Write-Ok "Mirror: $m"
-                }
-                return
+        $j = Start-Job -ScriptBlock {
+            param($u)
+            try {
+                $r = Invoke-WebRequest -Uri $u -Method Head -TimeoutSec 6 -UseBasicParsing -ErrorAction Stop
+                $r.StatusCode
+            } catch {
+                if ($_.Exception.Response) { $_.Exception.Response.StatusCode.value__ } else { 0 }
             }
-        } catch {
-            Write-Info "  Unreachable: $m"
+        } -ArgumentList $url
+
+        $ok = $false
+        if (Wait-Job $j -Timeout 8) {
+            $code = Receive-Job $j -ErrorAction SilentlyContinue
+            if ($code -and [int]$code -gt 0 -and [int]$code -lt 400) { $ok = $true }
         }
+        Remove-Job $j -Force -ErrorAction SilentlyContinue
+
+        if ($ok) {
+            $global:SelectedMirror = $m
+            if ($m -eq "https://github.com") {
+                Write-Ok "Direct: github.com"
+            } else {
+                Write-Ok "Mirror: $($m -replace 'https://([^/]+)/.*','$1')"
+            }
+            return
+        }
+        Write-Info "  Unreachable: $($m -replace 'https://([^/]+)/.*','$1')"
     }
-    Exit-WithError "All mirrors failed. Check your network connection."
+
+    # All HEAD checks failed — default to ghfast.top and let download fallback handle it
+    $global:SelectedMirror = "https://ghfast.top/https://github.com"
+    Write-Warn "All mirror checks timed out. Defaulting to ghfast.top — will try all mirrors during download."
 }
 
 function Get-DownloadUrl {
