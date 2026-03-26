@@ -11,6 +11,8 @@
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$OutputEncoding           = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # Install location (official: claude install, and our fallback both use this path)
 $LOCAL_BIN         = "$env:USERPROFILE\.local\bin"

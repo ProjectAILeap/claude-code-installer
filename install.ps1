@@ -16,8 +16,10 @@
 if (-not (Get-Variable 'NoVerify' -ErrorAction SilentlyContinue)) { $NoVerify = $false }
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
-$ProgressPreference    = 'SilentlyContinue'   # speeds up Invoke-WebRequest (aligns with official)
+$ErrorActionPreference    = "Stop"
+$ProgressPreference       = 'SilentlyContinue'   # speeds up Invoke-WebRequest (aligns with official)
+$OutputEncoding           = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 # -- Constants -----------------------------------------------------------------
 $RELEASES_REPO    = "ProjectAILeap/claude-code-releases"
@@ -159,10 +161,14 @@ function Get-LatestVersion {
 
 # -- Detect installed version via claude --version (aligns with official) ------
 function Get-InstalledVersion {
+    $LOCAL_EXE = "$env:USERPROFILE\.local\bin\claude.exe"
+    $exe = $null
     $cmd = Get-Command claude -ErrorAction SilentlyContinue
-    if ($cmd) {
+    if ($cmd) { $exe = $cmd.Source }
+    elseif (Test-Path $LOCAL_EXE) { $exe = $LOCAL_EXE }
+    if ($exe) {
         try {
-            $out = & $cmd.Source --version 2>&1
+            $out = & $exe --version 2>&1
             if ("$out" -match '(\d+\.\d+\.\d+)') { return $Matches[1] }
         } catch {}
     }
@@ -189,7 +195,9 @@ function Invoke-Download {
         # it does not abort a stalled mid-transfer.
         $job = Start-Job -ScriptBlock {
             param($u, $out)
-            $ProgressPreference = 'SilentlyContinue'
+            $ProgressPreference       = 'SilentlyContinue'
+            $OutputEncoding           = [System.Text.Encoding]::UTF8
+            [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
             Invoke-WebRequest -Uri $u -OutFile $out -UseBasicParsing -ErrorAction Stop
         } -ArgumentList $Url, $OutFile
 
@@ -646,6 +654,8 @@ function Main {
 
     $installJob = Start-Job -ScriptBlock {
         param($b)
+        $OutputEncoding           = [System.Text.Encoding]::UTF8
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         & $b install 2>&1
     } -ArgumentList $binaryPath
 
@@ -660,32 +670,36 @@ function Main {
         Write-Warn "claude install timed out (90s). CDN may be unreachable -- switching to manual fallback."
     }
 
-    # Refresh PATH from registry so we can detect what install set up
+    # Unified PATH setup -- regardless of whether claude install succeeded or not
+    $LOCAL_BIN = "$env:USERPROFILE\.local\bin"
+    $localExe  = "$LOCAL_BIN\claude.exe"
+    New-Item -ItemType Directory -Force -Path $LOCAL_BIN | Out-Null
+
+    if (Test-Path $localExe) {
+        # claude install placed the binary (with native build) -- keep it, just fix PATH
+        Write-Ok "Claude Code installed by claude install: $localExe"
+    } else {
+        # claude install failed completely -- copy raw binary as fallback
+        Write-Warn "claude install did not place binary, using downloaded binary as fallback."
+        Copy-Item $binaryPath $localExe -Force
+        Unblock-File -Path $localExe -ErrorAction SilentlyContinue
+        Write-Ok "Claude Code installed (fallback): $localExe"
+    }
+
+    # Add LOCAL_BIN to user PATH if not already there
+    $currentUp = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($null -eq $currentUp) { $currentUp = "" }
+    if (-not $currentUp.Contains($LOCAL_BIN)) {
+        [Environment]::SetEnvironmentVariable("Path", "$currentUp;$LOCAL_BIN", "User")
+        Write-Ok "Added to PATH: $LOCAL_BIN"
+    }
+
+    # Refresh current session PATH so claude is usable immediately
     $mp = [Environment]::GetEnvironmentVariable("Path", "Machine"); if ($null -eq $mp) { $mp = "" }
     $up = [Environment]::GetEnvironmentVariable("Path", "User");    if ($null -eq $up) { $up = "" }
     $env:Path = "$mp;$up"
-
-    $claudeOk = $null -ne (Get-Command claude -ErrorAction SilentlyContinue)
-
-    if (-not $claudeOk) {
-        Write-Warn "claude not found in PATH after install -- using manual fallback."
-        $LOCAL_BIN = "$env:USERPROFILE\.local\bin"
-        New-Item -ItemType Directory -Force -Path $LOCAL_BIN | Out-Null
-        $localExe = "$LOCAL_BIN\claude.exe"
-        Copy-Item $binaryPath $localExe -Force
-        Unblock-File -Path $localExe -ErrorAction SilentlyContinue
-        $currentUp = [Environment]::GetEnvironmentVariable("Path", "User")
-        if ($null -eq $currentUp) { $currentUp = "" }
-        if (-not $currentUp.Contains($LOCAL_BIN)) {
-            [Environment]::SetEnvironmentVariable("Path", "$currentUp;$LOCAL_BIN", "User")
-            $env:Path = "$env:Path;$LOCAL_BIN"
-            Write-Ok "Added to PATH: $LOCAL_BIN"
-        }
-        Write-Ok "Claude Code installed: $localExe"
-        Write-Warn "Restart PowerShell for PATH to take effect."
-    } else {
-        Write-Ok "Claude Code setup complete."
-    }
+    Write-Ok "claude is available in this session immediately."
+    Write-Info "New terminal windows will also have claude in PATH automatically."
 
     # 12. Optional: CC Switch
     Write-Host ""

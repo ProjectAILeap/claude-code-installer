@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 :: ============================================================================
 ::  Claude Code Uninstaller for Windows -- ProjectAILeap
 ::  https://github.com/ProjectAILeap/claude-code-installer
