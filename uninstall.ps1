@@ -12,11 +12,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# Possible install locations
-$OFFICIAL_BIN_DIR  = "$env:USERPROFILE\.local\bin"
-$OFFICIAL_EXE      = "$OFFICIAL_BIN_DIR\claude.exe"
-$FALLBACK_DIR      = "$env:LOCALAPPDATA\Programs\ClaudeCode"
-$FALLBACK_EXE      = "$FALLBACK_DIR\claude.exe"
+# Install location (official: claude install, and our fallback both use this path)
+$LOCAL_BIN         = "$env:USERPROFILE\.local\bin"
+$CLAUDE_EXE        = "$LOCAL_BIN\claude.exe"
 $DOWNLOAD_CACHE    = "$env:USERPROFILE\.claude\downloads"
 $CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude"
 $CLAUDE_CONFIG_FILE = "$env:USERPROFILE\.claude.json"
@@ -91,12 +89,9 @@ function Main {
     Write-Host "=== Claude Code Windows Uninstaller ===  ProjectAILeap" -ForegroundColor Cyan
     Write-Host ""
 
-    # Detect install locations
+    # Detect install location; also fall back to Get-Command in case binary is elsewhere
     $foundExes = @()
-    if (Test-Path $OFFICIAL_EXE)  { $foundExes += $OFFICIAL_EXE }
-    if (Test-Path $FALLBACK_EXE)  { $foundExes += $FALLBACK_EXE }
-
-    # Also detect via Get-Command in case installed elsewhere
+    if (Test-Path $CLAUDE_EXE) { $foundExes += $CLAUDE_EXE }
     $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
     if ($claudeCmd -and ($foundExes -notcontains $claudeCmd.Source)) {
         $foundExes += $claudeCmd.Source
@@ -146,11 +141,9 @@ function Main {
         if (Ask-YesNo "Remove Claude Code binary ($exe)?") {
             $removeBinaries += $exe
             $dir = Split-Path $exe -Parent
-            if ($dir -ne $OFFICIAL_BIN_DIR -or -not (Get-ChildItem $dir -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "claude.exe" })) {
-                if (Test-Path $dir) {
-                    if (Ask-YesNo "  Also remove directory ($dir)?") {
-                        $removeDirs += $dir
-                    }
+            if (Test-Path $dir) {
+                if (Ask-YesNo "  Also remove directory ($dir)?") {
+                    $removeDirs += $dir
                 }
             }
             if ($userPath.Contains($dir) -and ($removePathDirs -notcontains $dir)) {

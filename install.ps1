@@ -668,19 +668,19 @@ function Main {
 
     if (-not $claudeOk) {
         Write-Warn "claude not found in PATH after install -- using manual fallback."
-        $FALLBACK_DIR = "$env:LOCALAPPDATA\Programs\ClaudeCode"
-        New-Item -ItemType Directory -Force -Path $FALLBACK_DIR | Out-Null
-        $fallbackExe = "$FALLBACK_DIR\claude.exe"
-        Copy-Item $binaryPath $fallbackExe -Force
-        Unblock-File -Path $fallbackExe -ErrorAction SilentlyContinue
+        $LOCAL_BIN = "$env:USERPROFILE\.local\bin"
+        New-Item -ItemType Directory -Force -Path $LOCAL_BIN | Out-Null
+        $localExe = "$LOCAL_BIN\claude.exe"
+        Copy-Item $binaryPath $localExe -Force
+        Unblock-File -Path $localExe -ErrorAction SilentlyContinue
         $currentUp = [Environment]::GetEnvironmentVariable("Path", "User")
         if ($null -eq $currentUp) { $currentUp = "" }
-        if (-not $currentUp.Contains($FALLBACK_DIR)) {
-            [Environment]::SetEnvironmentVariable("Path", "$currentUp;$FALLBACK_DIR", "User")
-            $env:Path = "$env:Path;$FALLBACK_DIR"
-            Write-Ok "Added to PATH: $FALLBACK_DIR"
+        if (-not $currentUp.Contains($LOCAL_BIN)) {
+            [Environment]::SetEnvironmentVariable("Path", "$currentUp;$LOCAL_BIN", "User")
+            $env:Path = "$env:Path;$LOCAL_BIN"
+            Write-Ok "Added to PATH: $LOCAL_BIN"
         }
-        Write-Ok "Claude Code installed: $fallbackExe"
+        Write-Ok "Claude Code installed: $localExe"
         Write-Warn "Restart PowerShell for PATH to take effect."
     } else {
         Write-Ok "Claude Code setup complete."
