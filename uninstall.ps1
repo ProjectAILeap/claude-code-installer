@@ -1,5 +1,4 @@
-﻿#Requires -Version 5.1
-<#
+﻿<#
 .SYNOPSIS
     Claude Code Windows Uninstaller — ProjectAILeap
 .DESCRIPTION

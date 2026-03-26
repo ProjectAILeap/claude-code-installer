@@ -1,5 +1,4 @@
-﻿#Requires -Version 5.1
-<#
+﻿<#
 .SYNOPSIS
     Claude Code Windows Installer — ProjectAILeap
 .DESCRIPTION
