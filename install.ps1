@@ -1,6 +1,6 @@
-﻿<#
+<#
 .SYNOPSIS
-    Claude Code Windows Installer — ProjectAILeap
+    Claude Code Windows Installer -- ProjectAILeap
 .DESCRIPTION
     Installs or upgrades Claude Code on Windows using official binaries from
     github.com/ProjectAILeap/claude-code-releases (no npm required).
@@ -19,7 +19,7 @@ if (-not (Get-Variable 'NoVerify' -ErrorAction SilentlyContinue)) { $NoVerify = 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+# -- Constants -----------------------------------------------------------------
 $RELEASES_REPO      = "ProjectAILeap/claude-code-releases"
 $GIT_REPO           = "git-for-windows/git"
 $CC_SWITCH_REPO     = "farion1231/cc-switch"
@@ -39,8 +39,8 @@ $MIRRORS = @(
     "https://kkgithub.com"
 )
 
-# ── Output ────────────────────────────────────────────────────────────────────
-function Write-Step { param($msg) Write-Host "`n▶ $msg" -ForegroundColor Cyan }
+# -- Output --------------------------------------------------------------------
+function Write-Step { param($msg) Write-Host "`n>> $msg" -ForegroundColor Cyan }
 function Write-Info { param($msg) Write-Host "  [INFO]  $msg" -ForegroundColor Gray }
 function Write-Ok   { param($msg) Write-Host "  [ OK ]  $msg" -ForegroundColor Green }
 function Write-Warn { param($msg) Write-Host "  [WARN]  $msg" -ForegroundColor Yellow }
@@ -52,18 +52,18 @@ function Exit-WithError {
     exit 1
 }
 
-# ── Mirror selection ──────────────────────────────────────────────────────────
+# -- Mirror selection ----------------------------------------------------------
 $global:SelectedMirror = ""
 
 function Get-MirrorTestUrl {
     param([string]$Mirror)
     # Proxy mirrors (ghfast.top / gh-proxy.com / mirror.ghproxy.com) support raw.githubusercontent.com
-    # but often reject HEAD on github.com HTML pages — test with a known raw file instead
+    # but often reject HEAD on github.com HTML pages -- test with a known raw file instead
     if ($Mirror -match '/https://github\.com$') {
         return ($Mirror -replace '/https://github\.com$', '/https://raw.githubusercontent.com') + `
                "/ProjectAILeap/claude-code-installer/main/README.md"
     }
-    # kkgithub.com is a domain mirror of github.com — test its releases page
+    # kkgithub.com is a domain mirror of github.com -- test its releases page
     return "$Mirror/$RELEASES_REPO/releases"
 }
 
@@ -125,7 +125,7 @@ function Get-DownloadUrl {
     return "$global:SelectedMirror$Path"
 }
 
-# ── Fetch Claude Code latest version ─────────────────────────────────────────
+# -- Fetch Claude Code latest version -----------------------------------------
 function Get-LatestVersion {
     Write-Step "Fetching latest Claude Code version..."
     $apiUrl = "https://api.github.com/repos/$RELEASES_REPO/releases/latest"
@@ -164,7 +164,7 @@ function Get-LatestVersion {
     return $ver
 }
 
-# ── Installed version ─────────────────────────────────────────────────────────
+# -- Installed version ---------------------------------------------------------
 function Get-InstalledVersion {
     if (Test-Path $VERSION_FILE) {
         return (Get-Content $VERSION_FILE -Raw).Trim()
@@ -172,7 +172,7 @@ function Get-InstalledVersion {
     return ""
 }
 
-# ── Download helper with retry ────────────────────────────────────────────────
+# -- Download helper with retry ------------------------------------------------
 function Invoke-Download {
     param(
         [string]$Url,
@@ -201,7 +201,7 @@ function Invoke-Download {
     return $false
 }
 
-# ── Multi-mirror download (tries all mirrors on failure) ─────────────────────
+# -- Multi-mirror download (tries all mirrors on failure) ---------------------
 function Invoke-DownloadMirror {
     param(
         [string]$Path,
@@ -223,7 +223,7 @@ function Invoke-DownloadMirror {
     return $false
 }
 
-# ── SHA-256 verification ──────────────────────────────────────────────────────
+# -- SHA-256 verification ------------------------------------------------------
 function Test-Checksum {
     param(
         [string]$FilePath,
@@ -255,7 +255,7 @@ function Test-Checksum {
     }
 }
 
-# ── PATH management ───────────────────────────────────────────────────────────
+# -- PATH management -----------------------------------------------------------
 function Add-ToUserPath {
     param([string]$Dir)
     $current = [Environment]::GetEnvironmentVariable("Path", "User")
@@ -272,7 +272,7 @@ function Refresh-SessionPath {
     $env:Path = "$machine;$user"
 }
 
-# ── Ensure Git for Windows ────────────────────────────────────────────────────
+# -- Ensure Git for Windows ----------------------------------------------------
 function Ensure-Git {
     Write-Step "Checking Git for Windows..."
 
@@ -297,7 +297,7 @@ function Ensure-Git {
             if ("$out" -match 'git version (\d+\.\d+\.\d+)') {
                 $ver = [Version]$Matches[1]
                 if ($ver -ge $GIT_MIN_VER) {
-                    Write-Ok "Git $($Matches[1]) — OK"
+                    Write-Ok "Git $($Matches[1]) -- OK"
                     $needInstall = $false
                 } else {
                     Write-Info "Git $($Matches[1]) < $GIT_MIN_VER, upgrading..."
@@ -312,7 +312,7 @@ function Ensure-Git {
 
     Write-Info "Installing Git for Windows..."
 
-    # ── Version detection: npmmirror (primary) → GitHub API → hardcoded ──────
+    # -- Version detection: npmmirror (primary) -> GitHub API -> hardcoded ------
     $gitVer = $GIT_FALLBACK_VER
     $gitTag = $GIT_FALLBACK_TAG
 
@@ -346,7 +346,7 @@ function Ensure-Git {
         }
     }
 
-    # ── Download: npmmirror → GitHub mirrors → winget → manual ───────────────
+    # -- Download: npmmirror -> GitHub mirrors -> winget -> manual ---------------
     $exeName = "Git-$gitVer-64-bit.exe"
     $tmpExe  = "$env:TEMP\$exeName"
 
@@ -404,7 +404,7 @@ function Ensure-Git {
     Refresh-SessionPath
 }
 
-# ── Write ~/.claude.json ──────────────────────────────────────────────────────
+# -- Write ~/.claude.json ------------------------------------------------------
 function Write-ClaudeJson {
     try {
         if (Test-Path $CLAUDE_JSON) {
@@ -423,7 +423,7 @@ function Write-ClaudeJson {
     }
 }
 
-# ── Configure API / Provider ──────────────────────────────────────────────────
+# -- Configure API / Provider --------------------------------------------------
 function Configure-ApiKey {
     param([bool]$CcSwitchInstalled)
 
@@ -450,7 +450,7 @@ function Configure-ApiKey {
 
     if ($CcSwitchInstalled) {
         # CC Switch will handle real configuration; write placeholder so claude starts
-        Write-Info "CC Switch installed → setting placeholder provider config..."
+        Write-Info "CC Switch installed -> setting placeholder provider config..."
         [Environment]::SetEnvironmentVariable("ANTHROPIC_BASE_URL", "https://api.deepseek.com", "User")
         [Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY",  "PLACEHOLDER_USE_CC_SWITCH", "User")
         $env:ANTHROPIC_BASE_URL = "https://api.deepseek.com"
@@ -458,7 +458,7 @@ function Configure-ApiKey {
         Write-Ok "Placeholder set. Open CC Switch to configure your Provider and API Key."
 
     } elseif ($canReach) {
-        # Direct Anthropic access — prompt for real key
+        # Direct Anthropic access -- prompt for real key
         Write-Info "Anthropic API is reachable directly."
         Write-Host ""
         Write-Host "  Enter your Anthropic API Key (sk-ant-...), or press Enter to skip:" `
@@ -478,7 +478,7 @@ function Configure-ApiKey {
         Write-Host ""
         Write-Host "  Recommended options:" -ForegroundColor Yellow
         Write-Host "   1. Re-run installer and install CC Switch"
-        Write-Host "      → Use DeepSeek / Kimi / GLM / Aliyun as provider (no VPN needed)"
+        Write-Host "      -> Use DeepSeek / Kimi / GLM / Aliyun as provider (no VPN needed)"
         Write-Host "   2. Set up a proxy, then re-run installer"
         Write-Host "   3. Set manually after install:"
         Write-Host "        `$env:ANTHROPIC_BASE_URL = 'https://api.your-provider.com'"
@@ -489,7 +489,7 @@ function Configure-ApiKey {
     Write-ClaudeJson
 }
 
-# ── Optional: CC Switch ───────────────────────────────────────────────────────
+# -- Optional: CC Switch -------------------------------------------------------
 function Install-CcSwitch {
     Write-Step "Installing CC Switch (optional)..."
 
@@ -551,10 +551,10 @@ function Install-CcSwitch {
     }
 }
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# -- Main ----------------------------------------------------------------------
 function Main {
     Write-Host ""
-    Write-Host "━━━ Claude Code Windows Installer ━━━  ProjectAILeap" -ForegroundColor Cyan
+    Write-Host "=== Claude Code Windows Installer ===  ProjectAILeap" -ForegroundColor Cyan
     Write-Host "Source: github.com/ProjectAILeap/claude-code-releases" -ForegroundColor Gray
     Write-Host ""
 
@@ -573,7 +573,7 @@ function Main {
             }
             Write-Info "Binary missing, reinstalling..."
         } elseif ($installedVersion -ne $targetVersion) {
-            Write-Info "Upgrading: v$installedVersion → v$targetVersion"
+            Write-Info "Upgrading: v$installedVersion -> v$targetVersion"
         }
     } else {
         Write-Info "Installing Claude Code v$targetVersion"
@@ -653,11 +653,11 @@ function Main {
 
     # 12. Done
     Write-Host ""
-    Write-Host "  ✓ Claude Code v$targetVersion installed!" -ForegroundColor Green
+    Write-Host "  [OK] Claude Code v$targetVersion installed!" -ForegroundColor Green
     Write-Host ""
     Write-Host "  Quick start:"
-    Write-Host "    claude            — start Claude Code"
-    Write-Host "    claude --version  — verify installation"
+    Write-Host "    claude            -- start Claude Code"
+    Write-Host "    claude --version  -- verify installation"
     Write-Host ""
     if ($ccSwitchInstalled) {
         Write-Host "  CC Switch: open from Start Menu to configure your API Provider." -ForegroundColor Cyan

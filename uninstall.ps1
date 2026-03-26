@@ -1,6 +1,6 @@
-﻿<#
+<#
 .SYNOPSIS
-    Claude Code Windows Uninstaller — ProjectAILeap
+    Claude Code Windows Uninstaller -- ProjectAILeap
 .DESCRIPTION
     Interactively removes Claude Code components installed by install.ps1.
     Handles: binary, PATH, config, CC Switch, ANTHROPIC_* environment variables.
@@ -15,7 +15,7 @@ $VERSION_FILE       = "$INSTALL_DIR\version.txt"
 $CLAUDE_CONFIG_DIR  = "$env:USERPROFILE\.claude"
 $CLAUDE_CONFIG_FILE = "$env:USERPROFILE\.claude.json"
 
-function Write-Step { param($msg) Write-Host "`n▶ $msg" -ForegroundColor Cyan }
+function Write-Step { param($msg) Write-Host "`n>> $msg" -ForegroundColor Cyan }
 function Write-Ok   { param($msg) Write-Host "  [ OK ]  $msg" -ForegroundColor Green }
 function Write-Info { param($msg) Write-Host "  [INFO]  $msg" -ForegroundColor Gray }
 function Write-Warn { param($msg) Write-Host "  [WARN]  $msg" -ForegroundColor Yellow }
@@ -83,7 +83,7 @@ function Uninstall-CcSwitch {
 
 function Main {
     Write-Host ""
-    Write-Host "━━━ Claude Code Windows Uninstaller ━━━  ProjectAILeap" -ForegroundColor Cyan
+    Write-Host "=== Claude Code Windows Uninstaller ===  ProjectAILeap" -ForegroundColor Cyan
     Write-Host ""
 
     # Detect installation
