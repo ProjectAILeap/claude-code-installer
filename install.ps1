@@ -161,6 +161,28 @@ function Invoke-Download {
     return $false
 }
 
+# ── Multi-mirror download (tries all mirrors on failure) ─────────────────────
+function Invoke-DownloadMirror {
+    param(
+        [string]$Path,
+        [string]$OutFile,
+        [string]$Label = "file"
+    )
+    # Selected mirror first, then the rest
+    $order = @($global:SelectedMirror) + ($MIRRORS | Where-Object { $_ -ne $global:SelectedMirror })
+    $seen  = @()
+    foreach ($m in $order) {
+        $url = "$m$Path"
+        if ($seen -contains $url) { continue }
+        $seen += $url
+        if (Invoke-Download -Url $url -OutFile $OutFile -Label $Label -RetryCount 1) {
+            return $true
+        }
+        Write-Info "  Trying next mirror..."
+    }
+    return $false
+}
+
 # ── SHA-256 verification ──────────────────────────────────────────────────────
 function Test-Checksum {
     param(
@@ -531,8 +553,8 @@ function Main {
     # 6. Download Claude Code binary
     Write-Step "Downloading claude-$targetVersion-win32-x64.exe..."
     $fileName = "claude-$targetVersion-win32-x64.exe"
-    $dlUrl    = Get-DownloadUrl "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
-    $ckUrl    = Get-DownloadUrl "/$RELEASES_REPO/releases/download/v$targetVersion/sha256sums.txt"
+    $dlPath   = "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
+    $ckPath   = "/$RELEASES_REPO/releases/download/v$targetVersion/sha256sums.txt"
 
     $tmpDir  = [System.IO.Path]::GetTempPath() + [System.Guid]::NewGuid().ToString()
     New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
@@ -541,13 +563,13 @@ function Main {
     $ckFile  = "$tmpDir\sha256sums.txt"
 
     try {
-        if (-not (Invoke-Download -Url $dlUrl -OutFile $binFile -Label "Claude Code binary")) {
+        if (-not (Invoke-DownloadMirror -Path $dlPath -OutFile $binFile -Label "Claude Code binary")) {
             Exit-WithError "Download failed. Try a different mirror or check your connection."
         }
 
         # 7. Checksum
         if (-not $NoVerify) {
-            $ckOk = Invoke-Download -Url $ckUrl -OutFile $ckFile -Label "checksums" -RetryCount 2
+            $ckOk = Invoke-DownloadMirror -Path $ckPath -OutFile $ckFile -Label "checksums"
             if ($ckOk) {
                 if (-not (Test-Checksum -FilePath $binFile -ChecksumFile $ckFile -FileName $fileName)) {
                     Exit-WithError "Checksum verification failed. The file may be corrupted."
