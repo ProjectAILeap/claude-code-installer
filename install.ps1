@@ -597,10 +597,11 @@ function Main {
     }
 
     # 6. Download Claude Code binary
-    $fileName = "claude-$targetVersion-win32-x64.exe"
-    $dlPath   = "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
-    $ckPath   = "/$RELEASES_REPO/releases/download/v$targetVersion/sha256sums.txt"
+    $fileName  = "claude-$targetVersion-win32-x64.exe"
+    $dlPath    = "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
+    $ckPath    = "/$RELEASES_REPO/releases/download/v$targetVersion/sha256sums.txt"
     $cachedBin = "$env:TEMP\$fileName"
+    $cachedCk  = "$env:TEMP\sha256sums-$targetVersion.txt"
 
     $tmpDir  = [System.IO.Path]::GetTempPath() + [System.Guid]::NewGuid().ToString()
     New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
@@ -609,23 +610,42 @@ function Main {
     $ckFile  = "$tmpDir\sha256sums.txt"
 
     try {
-        if (Test-Path $cachedBin) {
-            Write-Step "Using cached $fileName..."
-            Copy-Item $cachedBin $binFile -Force
+        # Download checksums first (needed for cache verification too)
+        $ckOk = $false
+        if (Test-Path $cachedCk) {
+            Copy-Item $cachedCk $ckFile -Force
+            $ckOk = $true
         } else {
+            $ckOk = Invoke-DownloadMirror -Path $ckPath -OutFile $ckFile -Label "checksums"
+            if ($ckOk) { Copy-Item $ckFile $cachedCk -Force -ErrorAction SilentlyContinue }
+        }
+
+        # Use cached binary if present and checksum passes; otherwise download
+        $needDownload = $true
+        if (Test-Path $cachedBin) {
+            if ($ckOk -and (Test-Checksum -FilePath $cachedBin -ChecksumFile $ckFile -FileName $fileName)) {
+                Write-Step "Using cached $fileName (checksum OK)..."
+                Copy-Item $cachedBin $binFile -Force
+                $needDownload = $false
+            } else {
+                Write-Info "Cached file missing or corrupt, re-downloading..."
+                Remove-Item $cachedBin -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        if ($needDownload) {
             Write-Step "Downloading $fileName..."
             if (-not (Invoke-DownloadMirror -Path $dlPath -OutFile $binFile -Label "Claude Code binary")) {
                 Exit-WithError "Download failed. Try a different mirror or check your connection."
             }
-            # Cache for potential re-runs
             Copy-Item $binFile $cachedBin -Force -ErrorAction SilentlyContinue
         }
 
-        # 7. Checksum
-        if (-not $NoVerify) {
-            $ckOk = Invoke-DownloadMirror -Path $ckPath -OutFile $ckFile -Label "checksums"
+        # 7. Checksum (for fresh downloads)
+        if ($needDownload -and -not $NoVerify) {
             if ($ckOk) {
                 if (-not (Test-Checksum -FilePath $binFile -ChecksumFile $ckFile -FileName $fileName)) {
+                    Remove-Item $cachedBin -Force -ErrorAction SilentlyContinue
                     Exit-WithError "Checksum verification failed. The file may be corrupted."
                 }
             } else {
