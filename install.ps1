@@ -624,7 +624,7 @@ function Main {
 
     if ($needDownload) {
         Write-Step "Downloading $fileName..."
-        Write-Info "Binary size is ~45 MB, no progress bar -- please wait..."
+        Write-Info "Large binary (~230 MB), no progress bar -- please wait..."
         if (-not (Invoke-DownloadMirror -Path $dlPath -OutFile $binaryPath -Label "Claude Code binary")) {
             Exit-WithError "Download failed. Try a different mirror or check your connection."
         }
@@ -639,12 +639,51 @@ function Main {
     # 10. Remove Zone.Identifier (cached files may not have been unblocked)
     Unblock-File -Path $binaryPath -ErrorAction SilentlyContinue
 
-    # 11. Run install (aligns with official: let the binary handle setup)
+    # 11. Run install; fall back to manual setup if it fails (e.g. CDN unreachable in China)
     Write-Step "Setting up Claude Code..."
-    try {
-        & $binaryPath install
-    } catch {
-        Exit-WithError "Installation failed: $($_.Exception.Message)"
+    Write-Info "Running claude install (may download additional components)..."
+
+    $installJob = Start-Job -ScriptBlock {
+        param($b)
+        & $b install 2>&1
+    } -ArgumentList $binaryPath
+
+    $done = Wait-Job $installJob -Timeout 90
+    if ($done) {
+        @(Receive-Job $installJob -ErrorAction SilentlyContinue) |
+            ForEach-Object { if ($_) { Write-Host "  $_" } }
+        Remove-Job $installJob -Force -ErrorAction SilentlyContinue
+    } else {
+        Stop-Job  $installJob -ErrorAction SilentlyContinue
+        Remove-Job $installJob -Force -ErrorAction SilentlyContinue
+        Write-Warn "claude install timed out (90s)."
+    }
+
+    # Refresh PATH from registry so we can detect what install set up
+    $mp = [Environment]::GetEnvironmentVariable("Path", "Machine"); if ($null -eq $mp) { $mp = "" }
+    $up = [Environment]::GetEnvironmentVariable("Path", "User");    if ($null -eq $up) { $up = "" }
+    $env:Path = "$mp;$up"
+
+    $claudeOk = $null -ne (Get-Command claude -ErrorAction SilentlyContinue)
+
+    if (-not $claudeOk) {
+        Write-Warn "claude not found in PATH after install -- using manual fallback."
+        $FALLBACK_DIR = "$env:LOCALAPPDATA\Programs\ClaudeCode"
+        New-Item -ItemType Directory -Force -Path $FALLBACK_DIR | Out-Null
+        $fallbackExe = "$FALLBACK_DIR\claude.exe"
+        Copy-Item $binaryPath $fallbackExe -Force
+        Unblock-File -Path $fallbackExe -ErrorAction SilentlyContinue
+        $currentUp = [Environment]::GetEnvironmentVariable("Path", "User")
+        if ($null -eq $currentUp) { $currentUp = "" }
+        if (-not $currentUp.Contains($FALLBACK_DIR)) {
+            [Environment]::SetEnvironmentVariable("Path", "$currentUp;$FALLBACK_DIR", "User")
+            $env:Path = "$env:Path;$FALLBACK_DIR"
+            Write-Ok "Added to PATH: $FALLBACK_DIR"
+        }
+        Write-Ok "Claude Code installed: $fallbackExe"
+        Write-Warn "Restart PowerShell for PATH to take effect."
+    } else {
+        Write-Ok "Claude Code setup complete."
     }
 
     # 12. Optional: CC Switch
