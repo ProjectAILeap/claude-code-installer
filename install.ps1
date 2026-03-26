@@ -366,8 +366,9 @@ function Ensure-Git {
     if ($downloaded) {
         Write-Info "  Installing Git silently..."
         try {
+            # /CURRENTUSER installs to %LOCALAPPDATA%\Programs\Git — no admin/UAC required
             $proc = Start-Process -FilePath $tmpExe `
-                -ArgumentList '/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"' `
+                -ArgumentList '/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /CURRENTUSER /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"' `
                 -Wait -PassThru -ErrorAction Stop
             if ($proc.ExitCode -eq 0) {
                 Write-Ok "Git installed."
