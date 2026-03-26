@@ -79,13 +79,13 @@ function Select-Mirror {
     }
 
     $jobs | Wait-Job -Timeout 10 | Out-Null
-    $allResults = $jobs | ForEach-Object {
+    $allResults = @($jobs | ForEach-Object {
         if ($_.State -eq 'Completed') { Receive-Job $_ -ErrorAction SilentlyContinue }
         else { [PSCustomObject]@{ Mirror = ""; Ms = 99999; Ok = $false } }
-    } | Where-Object { $_ -and $_.Mirror } | Sort-Object @{e='Ok';desc=$true}, Ms
+    } | Where-Object { $_ -and $_.Mirror } | Sort-Object @{Expression='Ok';Descending=$true}, Ms)
     $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
 
-    $reachable = $allResults | Where-Object { $_.Ok }
+    $reachable = @($allResults | Where-Object { $_.Ok })
 
     # Print all results
     foreach ($r in $allResults) {
@@ -98,8 +98,8 @@ function Select-Mirror {
     }
     Write-Host ""
 
-    if ($reachable -and $reachable.Count -gt 0) {
-        $best = $reachable | Select-Object -First 1
+    if ($reachable.Count -gt 0) {
+        $best = $reachable[0]
         $global:SelectedMirror = $best.Mirror
         $tag = $best.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
         Write-Ok "Selected: $tag ($($best.Ms) ms)"
