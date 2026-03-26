@@ -182,8 +182,9 @@ function Invoke-Download {
         Write-Info "Downloading $Label (attempt $i/$RetryCount)..."
         Write-Info "  URL: $Url"
         try {
-            Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -ErrorAction Stop
+            Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
             if (Test-Path $OutFile) {
+                Unblock-File -Path $OutFile -ErrorAction SilentlyContinue
                 $sizeMB = [math]::Round((Get-Item $OutFile).Length / 1MB, 1)
                 Write-Ok "Downloaded $Label ($sizeMB MB)"
             }
@@ -597,6 +598,7 @@ function Main {
 
     if ($needDownload) {
         Write-Step "Downloading $fileName..."
+        Write-Info "Binary size is ~45 MB, no progress bar -- please wait..."
         if (-not (Invoke-DownloadMirror -Path $dlPath -OutFile $binaryPath -Label "Claude Code binary")) {
             Exit-WithError "Download failed. Try a different mirror or check your connection."
         }
@@ -608,10 +610,7 @@ function Main {
         }
     }
 
-    # 10. Remove Zone.Identifier so Windows runs it without prompts
-    Unblock-File -Path $binaryPath -ErrorAction SilentlyContinue
-
-    # 11. Run install (aligns with official: let the binary handle setup)
+    # 10. Run install (aligns with official: let the binary handle setup)
     Write-Step "Setting up Claude Code..."
     try {
         & $binaryPath install
