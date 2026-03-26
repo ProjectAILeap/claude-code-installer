@@ -142,7 +142,26 @@ curl -fsSL https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer
 
 ### Windows
 
-双击 `uninstall.bat`，或在 PowerShell 中运行 `.\uninstall.ps1`。
+**方法一（推荐）：** 双击 `uninstall.bat`
+
+> 自动从 GitHub 拉取脚本执行，无需处理 ExecutionPolicy 限制。
+
+**方法二：** 在 PowerShell 中在线执行：
+
+```powershell
+# 直连
+irm https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/uninstall.ps1 | iex
+
+# 镜像加速（中国大陆推荐）
+irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/uninstall.ps1 | iex
+```
+
+**方法三：** 本地 `.ps1` 文件执行（需先解除安全限制）：
+
+```powershell
+Unblock-File .\uninstall.ps1
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
+```
 
 卸载时可交互选择删除：
 
