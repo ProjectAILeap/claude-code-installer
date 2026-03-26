@@ -6,6 +6,7 @@
     Installs or upgrades Claude Code on Windows using official binaries from
     github.com/ProjectAILeap/claude-code-releases (no npm required).
     Supports GitHub mirror acceleration for users in China.
+    Automatically installs Git for Windows if missing.
 .NOTES
     Source:  https://github.com/ProjectAILeap/claude-code-installer
     Binaries: https://github.com/ProjectAILeap/claude-code-releases
@@ -13,21 +14,25 @@
 
 [CmdletBinding()]
 param(
-    [string]$Version = "",          # Pin a specific version (e.g. "1.2.3")
-    [switch]$Force,                 # Force reinstall even if up to date
-    [switch]$NoVerify               # Skip SHA-256 checksum verification
+    [string]$Version  = "",     # Pin a specific version (e.g. "1.2.3")
+    [switch]$Force,             # Force reinstall even if up to date
+    [switch]$NoVerify           # Skip SHA-256 checksum verification
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ── Constants ──────────────────────────────────────────────────────────────
-$RELEASES_REPO  = "ProjectAILeap/claude-code-releases"
-$INSTALL_DIR    = "$env:LOCALAPPDATA\Programs\ClaudeCode"
-$VERSION_FILE   = "$INSTALL_DIR\version.txt"
-$CLAUDE_EXE     = "$INSTALL_DIR\claude.exe"
-
-$CC_SWITCH_REPO = "farion1231/cc-switch"
+# ── Constants ─────────────────────────────────────────────────────────────────
+$RELEASES_REPO      = "ProjectAILeap/claude-code-releases"
+$GIT_REPO           = "git-for-windows/git"
+$CC_SWITCH_REPO     = "farion1231/cc-switch"
+$INSTALL_DIR        = "$env:LOCALAPPDATA\Programs\ClaudeCode"
+$VERSION_FILE       = "$INSTALL_DIR\version.txt"
+$CLAUDE_EXE         = "$INSTALL_DIR\claude.exe"
+$CLAUDE_JSON        = "$env:USERPROFILE\.claude.json"
+$GIT_MIN_VER        = [Version]"2.40.0"
+$GIT_FALLBACK_VER   = "2.47.1"
+$GIT_FALLBACK_TAG   = "v2.47.1.windows.1"
 
 $MIRRORS = @(
     "https://github.com",
@@ -37,12 +42,12 @@ $MIRRORS = @(
     "https://kkgithub.com"
 )
 
-# ── Colors / Output ────────────────────────────────────────────────────────
-function Write-Step  { param($msg) Write-Host "`n▶ $msg" -ForegroundColor Cyan }
-function Write-Info  { param($msg) Write-Host "  [INFO]  $msg" -ForegroundColor Gray }
-function Write-Ok    { param($msg) Write-Host "  [ OK ]  $msg" -ForegroundColor Green }
-function Write-Warn  { param($msg) Write-Host "  [WARN]  $msg" -ForegroundColor Yellow }
-function Write-Err   { param($msg) Write-Host "  [ERR ]  $msg" -ForegroundColor Red }
+# ── Output ────────────────────────────────────────────────────────────────────
+function Write-Step { param($msg) Write-Host "`n▶ $msg" -ForegroundColor Cyan }
+function Write-Info { param($msg) Write-Host "  [INFO]  $msg" -ForegroundColor Gray }
+function Write-Ok   { param($msg) Write-Host "  [ OK ]  $msg" -ForegroundColor Green }
+function Write-Warn { param($msg) Write-Host "  [WARN]  $msg" -ForegroundColor Yellow }
+function Write-Err  { param($msg) Write-Host "  [ERR ]  $msg" -ForegroundColor Red }
 
 function Exit-WithError {
     param($msg)
@@ -50,7 +55,7 @@ function Exit-WithError {
     exit 1
 }
 
-# ── Mirror selection ───────────────────────────────────────────────────────
+# ── Mirror selection ──────────────────────────────────────────────────────────
 $SelectedMirror = ""
 
 function Select-Mirror {
@@ -75,18 +80,17 @@ function Select-Mirror {
             Write-Info "  Unreachable: $m"
         }
     }
-
     Exit-WithError "All mirrors failed. Check your network connection."
 }
 
 function Get-DownloadUrl {
-    param([string]$Path)   # Path starting with /owner/repo/...
+    param([string]$Path)
     return "$SelectedMirror$Path"
 }
 
-# ── Fetch latest version ───────────────────────────────────────────────────
+# ── Fetch Claude Code latest version ─────────────────────────────────────────
 function Get-LatestVersion {
-    Write-Step "Fetching latest version..."
+    Write-Step "Fetching latest Claude Code version..."
     $apiUrl = "https://api.github.com/repos/$RELEASES_REPO/releases/latest"
     $ver = ""
 
@@ -100,22 +104,17 @@ function Get-LatestVersion {
     }
 
     if (-not $ver) {
-        # Fallback: parse redirect URL from kkgithub
         try {
             $fallbackUrl = "https://kkgithub.com/$RELEASES_REPO/releases/latest"
             $resp = Invoke-WebRequest -Uri $fallbackUrl -Method Head `
                 -TimeoutSec 10 -UseBasicParsing -MaximumRedirection 0 `
                 -ErrorAction SilentlyContinue
             $location = $resp.Headers["Location"] ?? ""
-            if ($location -match '(\d+\.\d+\.\d+)') {
-                $ver = $Matches[1]
-            }
+            if ($location -match '(\d+\.\d+\.\d+)') { $ver = $Matches[1] }
         } catch {
             if ($_.Exception.Response) {
-                $location = $_.Exception.Response.Headers.Location
-                if ($location -and "$location" -match '(\d+\.\d+\.\d+)') {
-                    $ver = $Matches[1]
-                }
+                $loc = $_.Exception.Response.Headers.Location
+                if ($loc -and "$loc" -match '(\d+\.\d+\.\d+)') { $ver = $Matches[1] }
             }
         }
     }
@@ -123,12 +122,11 @@ function Get-LatestVersion {
     if (-not $ver) {
         Exit-WithError "Cannot determine latest version. Check network connectivity."
     }
-
     Write-Info "Latest: v$ver"
     return $ver
 }
 
-# ── Installed version ──────────────────────────────────────────────────────
+# ── Installed version ─────────────────────────────────────────────────────────
 function Get-InstalledVersion {
     if (Test-Path $VERSION_FILE) {
         return (Get-Content $VERSION_FILE -Raw).Trim()
@@ -136,7 +134,7 @@ function Get-InstalledVersion {
     return ""
 }
 
-# ── Download helper with retry ─────────────────────────────────────────────
+# ── Download helper with retry ────────────────────────────────────────────────
 function Invoke-Download {
     param(
         [string]$Url,
@@ -149,10 +147,9 @@ function Invoke-Download {
         Write-Info "Downloading $Label (attempt $i/$RetryCount)..."
         Write-Info "  URL: $Url"
         try {
-            # Use BITS if available (better progress, resume support)
             if (Get-Command Start-BitsTransfer -ErrorAction SilentlyContinue) {
                 Start-BitsTransfer -Source $Url -Destination $OutFile `
-                    -DisplayName "Claude Code" -ErrorAction Stop
+                    -DisplayName $Label -ErrorAction Stop
             } else {
                 $wc = New-Object System.Net.WebClient
                 $wc.DownloadFile($Url, $OutFile)
@@ -166,7 +163,7 @@ function Invoke-Download {
     return $false
 }
 
-# ── SHA-256 verification ───────────────────────────────────────────────────
+# ── SHA-256 verification ──────────────────────────────────────────────────────
 function Test-Checksum {
     param(
         [string]$FilePath,
@@ -174,14 +171,13 @@ function Test-Checksum {
         [string]$FileName
     )
 
-    $content = Get-Content $ChecksumFile -Raw
+    $content  = Get-Content $ChecksumFile -Raw
     $expected = ""
 
     foreach ($line in ($content -split "`n")) {
         $line = $line.Trim()
         if ($line -match "^([a-f0-9]{64})\s+\*?$FileName") {
-            $expected = $Matches[1]
-            break
+            $expected = $Matches[1]; break
         }
     }
 
@@ -191,64 +187,272 @@ function Test-Checksum {
     }
 
     $actual = (Get-FileHash -Path $FilePath -Algorithm SHA256).Hash.ToLower()
-
     if ($actual -eq $expected.ToLower()) {
-        Write-Ok "SHA-256 verified."
-        return $true
+        Write-Ok "SHA-256 verified."; return $true
     } else {
-        Write-Err "Checksum mismatch!"
-        Write-Err "  Expected: $expected"
-        Write-Err "  Got:      $actual"
+        Write-Err "Checksum mismatch!  Expected: $expected  Got: $actual"
         return $false
     }
 }
 
-# ── PATH management ────────────────────────────────────────────────────────
+# ── PATH management ───────────────────────────────────────────────────────────
 function Add-ToUserPath {
     param([string]$Dir)
-
-    $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $parts = $currentPath -split ";" | Where-Object { $_ -ne "" }
-
-    if ($parts -contains $Dir) {
-        Write-Info "  $Dir already in user PATH."
-        return
-    }
-
+    $current = [Environment]::GetEnvironmentVariable("Path", "User")
+    $parts   = $current -split ";" | Where-Object { $_ -ne "" }
+    if ($parts -contains $Dir) { Write-Info "  $Dir already in user PATH."; return }
     $newPath = ($parts + $Dir) -join ";"
     [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
     Write-Ok "Added to user PATH: $Dir"
-    Write-Warn "Restart PowerShell to use 'claude' command."
 }
 
-# ── Optional: CC Switch ────────────────────────────────────────────────────
-function Install-CcSwitch {
-    param([string]$Mirror)
+function Refresh-SessionPath {
+    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine") ?? ""
+    $user    = [Environment]::GetEnvironmentVariable("Path", "User")   ?? ""
+    $env:Path = "$machine;$user"
+}
 
+# ── Ensure Git for Windows ────────────────────────────────────────────────────
+function Ensure-Git {
+    Write-Step "Checking Git for Windows..."
+
+    # Locate git
+    $gitExe = $null
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($gitCmd) { $gitExe = $gitCmd.Source }
+    if (-not $gitExe) {
+        foreach ($p in @(
+            "C:\Program Files\Git\cmd\git.exe",
+            "C:\Program Files\Git\bin\git.exe"
+        )) {
+            if (Test-Path $p) { $gitExe = $p; break }
+        }
+    }
+
+    # Check version
+    $needInstall = $true
+    if ($gitExe) {
+        try {
+            $out = & $gitExe --version 2>&1
+            if ("$out" -match 'git version (\d+\.\d+\.\d+)') {
+                $ver = [Version]$Matches[1]
+                if ($ver -ge $GIT_MIN_VER) {
+                    Write-Ok "Git $($Matches[1]) — OK"
+                    $needInstall = $false
+                } else {
+                    Write-Info "Git $($Matches[1]) < $GIT_MIN_VER, upgrading..."
+                }
+            }
+        } catch {}
+    } else {
+        Write-Info "Git not found."
+    }
+
+    if (-not $needInstall) { return }
+
+    Write-Info "Installing Git for Windows..."
+
+    # ── Version detection: npmmirror (primary) → GitHub API → hardcoded ──────
+    $gitVer = $GIT_FALLBACK_VER
+    $gitTag = $GIT_FALLBACK_TAG
+
+    try {
+        $list = Invoke-RestMethod `
+            -Uri "https://registry.npmmirror.com/-/binary/git-for-windows/" `
+            -TimeoutSec 8 -ErrorAction Stop
+        $last = $list |
+            Where-Object { $_.name -match '^v\d+\.\d+\.\d+\.windows\.\d+/$' } |
+            Select-Object -Last 1
+        if ($last) {
+            $gitTag = $last.name.TrimEnd('/')
+            $gitVer = if ($gitTag -match '^v(\d+\.\d+\.\d+)\.windows\.([2-9]\d*)$') {
+                "$($Matches[1]).$($Matches[2])"
+            } else { $gitTag -replace '^v(\d+\.\d+\.\d+).*', '$1' }
+            Write-Info "  Version (npmmirror): $gitTag"
+        }
+    } catch {
+        Write-Info "  npmmirror unavailable, trying GitHub API..."
+        try {
+            $rel = Invoke-RestMethod `
+                -Uri "https://api.github.com/repos/$GIT_REPO/releases/latest" `
+                -TimeoutSec 8 -ErrorAction Stop
+            $gitTag = $rel.tag_name
+            $gitVer = if ($gitTag -match '^v(\d+\.\d+\.\d+)\.windows\.([2-9]\d*)$') {
+                "$($Matches[1]).$($Matches[2])"
+            } else { $gitTag -replace '^v(\d+\.\d+\.\d+).*', '$1' }
+            Write-Info "  Version (GitHub): $gitTag"
+        } catch {
+            Write-Info "  Using fallback: $gitTag"
+        }
+    }
+
+    # ── Download: npmmirror → GitHub mirrors → winget → manual ───────────────
+    $exeName = "Git-$gitVer-64-bit.exe"
+    $tmpExe  = "$env:TEMP\$exeName"
+
+    $gitUrls = @(
+        "https://npmmirror.com/mirrors/git-for-windows/$gitTag/$exeName",
+        (Get-DownloadUrl "/$GIT_REPO/releases/download/$gitTag/$exeName"),
+        "https://github.com/$GIT_REPO/releases/download/$gitTag/$exeName"
+    ) | Select-Object -Unique
+
+    $downloaded = $false
+    foreach ($url in $gitUrls) {
+        if (Invoke-Download -Url $url -OutFile $tmpExe -Label "Git $gitVer") {
+            $downloaded = $true; break
+        }
+    }
+
+    if ($downloaded) {
+        Write-Info "  Installing Git silently..."
+        try {
+            $proc = Start-Process -FilePath $tmpExe `
+                -ArgumentList '/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"' `
+                -Wait -PassThru -ErrorAction Stop
+            if ($proc.ExitCode -eq 0) {
+                Write-Ok "Git installed."
+            } else {
+                Write-Warn "Git installer exited with code $($proc.ExitCode)."
+            }
+        } catch {
+            Write-Warn "Failed to run Git installer: $($_.Exception.Message)"
+        }
+        Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue
+    } else {
+        # winget fallback
+        $winget = Get-Command winget -ErrorAction SilentlyContinue
+        if ($winget) {
+            Write-Info "  Trying winget..."
+            try {
+                & winget install -e --id Git.Git --source winget `
+                    --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
+                Write-Ok "Git installed via winget."
+                $downloaded = $true
+            } catch {
+                Write-Warn "winget install failed: $($_.Exception.Message)"
+            }
+        }
+        if (-not $downloaded) {
+            Write-Warn "Could not install Git automatically."
+            Write-Info "Download manually: https://git-scm.com/download/win"
+            Write-Warn "Some Claude Code features may not work without Git."
+            return   # Non-blocking: continue with Claude Code install
+        }
+    }
+
+    # Refresh PATH so git is available in current session
+    Refresh-SessionPath
+}
+
+# ── Write ~/.claude.json ──────────────────────────────────────────────────────
+function Write-ClaudeJson {
+    try {
+        if (Test-Path $CLAUDE_JSON) {
+            $obj = Get-Content $CLAUDE_JSON -Raw | ConvertFrom-Json -ErrorAction Stop
+            $obj | Add-Member -NotePropertyName "hasCompletedOnboarding" `
+                              -NotePropertyValue $true -Force
+            $obj | ConvertTo-Json -Depth 10 |
+                Set-Content -Path $CLAUDE_JSON -Encoding UTF8
+        } else {
+            '{"hasCompletedOnboarding": true}' |
+                Set-Content -Path $CLAUDE_JSON -Encoding UTF8
+        }
+        Write-Info "~/.claude.json: onboarding skip set."
+    } catch {
+        Write-Warn "Could not write ~/.claude.json: $($_.Exception.Message)"
+    }
+}
+
+# ── Configure API / Provider ──────────────────────────────────────────────────
+function Configure-ApiKey {
+    param([bool]$CcSwitchInstalled)
+
+    Write-Step "Configuring API access..."
+
+    # Already configured by user?
+    $existingKey = [Environment]::GetEnvironmentVariable("ANTHROPIC_API_KEY", "User")
+    if ($existingKey -and $existingKey -ne "PLACEHOLDER_USE_CC_SWITCH") {
+        Write-Ok "ANTHROPIC_API_KEY already configured."
+        Write-ClaudeJson
+        return
+    }
+
+    # Test Anthropic connectivity (timeout 5s)
+    $canReach = $false
+    try {
+        Invoke-WebRequest -Uri "https://api.anthropic.com" -Method Head `
+            -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop | Out-Null
+        $canReach = $true
+    } catch {
+        # Connection refused / 4xx still means reachable
+        if ($_.Exception.Response -ne $null) { $canReach = $true }
+    }
+
+    if ($CcSwitchInstalled) {
+        # CC Switch will handle real configuration; write placeholder so claude starts
+        Write-Info "CC Switch installed → setting placeholder provider config..."
+        [Environment]::SetEnvironmentVariable("ANTHROPIC_BASE_URL", "https://api.deepseek.com", "User")
+        [Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY",  "PLACEHOLDER_USE_CC_SWITCH", "User")
+        $env:ANTHROPIC_BASE_URL = "https://api.deepseek.com"
+        $env:ANTHROPIC_API_KEY  = "PLACEHOLDER_USE_CC_SWITCH"
+        Write-Ok "Placeholder set. Open CC Switch to configure your Provider and API Key."
+
+    } elseif ($canReach) {
+        # Direct Anthropic access — prompt for real key
+        Write-Info "Anthropic API is reachable directly."
+        Write-Host ""
+        Write-Host "  Enter your Anthropic API Key (sk-ant-...), or press Enter to skip:" `
+            -ForegroundColor Yellow
+        $apiKey = Read-Host "  API Key"
+        if ($apiKey -and $apiKey.Trim() -ne "") {
+            [Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", $apiKey.Trim(), "User")
+            $env:ANTHROPIC_API_KEY = $apiKey.Trim()
+            Write-Ok "API Key saved to user environment."
+        } else {
+            Write-Warn "Skipped. Claude Code will prompt for API Key on first launch."
+        }
+
+    } else {
+        # No direct access, no CC Switch
+        Write-Warn "Cannot reach api.anthropic.com directly."
+        Write-Host ""
+        Write-Host "  Recommended options:" -ForegroundColor Yellow
+        Write-Host "   1. Re-run installer and install CC Switch"
+        Write-Host "      → Use DeepSeek / Kimi / GLM / Aliyun as provider (no VPN needed)"
+        Write-Host "   2. Set up a proxy, then re-run installer"
+        Write-Host "   3. Set manually after install:"
+        Write-Host "        `$env:ANTHROPIC_BASE_URL = 'https://api.your-provider.com'"
+        Write-Host "        `$env:ANTHROPIC_API_KEY  = 'your-api-key'"
+        Write-Host ""
+    }
+
+    Write-ClaudeJson
+}
+
+# ── Optional: CC Switch ───────────────────────────────────────────────────────
+function Install-CcSwitch {
     Write-Step "Installing CC Switch (optional)..."
 
-    # Get latest CC Switch version
     $ccVer = ""
     try {
-        $ccApi = Invoke-RestMethod -Uri "https://api.github.com/repos/$CC_SWITCH_REPO/releases/latest" `
+        $ccApi = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/$CC_SWITCH_REPO/releases/latest" `
             -TimeoutSec 10 -ErrorAction Stop
         $ccVer = $ccApi.tag_name -replace '^v', ''
     } catch {
-        Write-Warn "Could not fetch CC Switch version from API."
+        Write-Warn "Could not fetch CC Switch version."
     }
 
     if (-not $ccVer) {
-        Write-Warn "Could not determine CC Switch version."
         Write-Info "Download manually: https://github.com/$CC_SWITCH_REPO/releases"
-        return
+        return $false
     }
 
     $msiName = "CC-Switch-v$ccVer-Windows.msi"
     $msiPath = "$env:TEMP\$msiName"
 
-    # Build URLs with mirror fallback
     $msiUrls = @(
-        "$Mirror/$CC_SWITCH_REPO/releases/download/v$ccVer/$msiName",
+        (Get-DownloadUrl "/$CC_SWITCH_REPO/releases/download/v$ccVer/$msiName"),
         "https://ghfast.top/https://github.com/$CC_SWITCH_REPO/releases/download/v$ccVer/$msiName",
         "https://kkgithub.com/$CC_SWITCH_REPO/releases/download/v$ccVer/$msiName",
         "https://github.com/$CC_SWITCH_REPO/releases/download/v$ccVer/$msiName"
@@ -256,16 +460,15 @@ function Install-CcSwitch {
 
     $downloaded = $false
     foreach ($url in $msiUrls) {
-        if (Invoke-Download -Url $url -OutFile $msiPath -Label "CC Switch MSI") {
-            $downloaded = $true
-            break
+        if (Invoke-Download -Url $url -OutFile $msiPath -Label "CC Switch $ccVer MSI") {
+            $downloaded = $true; break
         }
     }
 
     if (-not $downloaded) {
         Write-Warn "CC Switch download failed."
         Write-Info "Download manually: https://github.com/$CC_SWITCH_REPO/releases"
-        return
+        return $false
     }
 
     Write-Info "Installing CC Switch silently..."
@@ -274,33 +477,33 @@ function Install-CcSwitch {
             -ArgumentList "/i `"$msiPath`" /qn /norestart" `
             -Wait -PassThru -ErrorAction Stop
         if ($proc.ExitCode -eq 0) {
-            Write-Ok "CC Switch installed."
+            Write-Ok "CC Switch v$ccVer installed."
+            return $true
         } else {
             Write-Warn "CC Switch MSI exited with code $($proc.ExitCode)."
             Write-Info "Try running the MSI manually: $msiPath"
+            return $false
         }
     } catch {
-        Write-Warn "Failed to run MSI installer: $($_.Exception.Message)"
+        Write-Warn "Failed to run MSI: $($_.Exception.Message)"
         Write-Info "MSI saved to: $msiPath"
+        return $false
     }
 }
 
-# ── Main ───────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 function Main {
     Write-Host ""
     Write-Host "━━━ Claude Code Windows Installer ━━━  ProjectAILeap" -ForegroundColor Cyan
     Write-Host "Source: github.com/ProjectAILeap/claude-code-releases" -ForegroundColor Gray
     Write-Host ""
 
-    # Resolve target version
+    # 1. Resolve target version
     $targetVersion = $Version
-    if (-not $targetVersion) {
-        $targetVersion = Get-LatestVersion
-    } else {
-        Write-Info "Pinned version: v$targetVersion"
-    }
+    if (-not $targetVersion) { $targetVersion = Get-LatestVersion }
+    else { Write-Info "Pinned version: v$targetVersion" }
 
-    # Check installed version
+    # 2. Check installed version
     $installedVersion = Get-InstalledVersion
     if ($installedVersion) {
         if ($installedVersion -eq $targetVersion -and -not $Force) {
@@ -316,37 +519,38 @@ function Main {
         Write-Info "Installing Claude Code v$targetVersion"
     }
 
-    # Mirror selection
+    # 3. Select mirror
     Select-Mirror
 
-    # Prepare install dir
+    # 4. Ensure Git (auto-install if missing/outdated)
+    Ensure-Git
+
+    # 5. Prepare install dir
     if (-not (Test-Path $INSTALL_DIR)) {
         New-Item -ItemType Directory -Path $INSTALL_DIR -Force | Out-Null
     }
 
-    # Download binary
+    # 6. Download Claude Code binary
     Write-Step "Downloading claude-$targetVersion-win32-x64.exe..."
-    $fileName  = "claude-$targetVersion-win32-x64.exe"
-    $dlPath    = "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
-    $ckPath    = "/$RELEASES_REPO/releases/download/v$targetVersion/sha256sums.txt"
-    $dlUrl     = Get-DownloadUrl $dlPath
-    $ckUrl     = Get-DownloadUrl $ckPath
+    $fileName = "claude-$targetVersion-win32-x64.exe"
+    $dlUrl    = Get-DownloadUrl "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
+    $ckUrl    = Get-DownloadUrl "/$RELEASES_REPO/releases/download/v$targetVersion/sha256sums.txt"
 
-    $tmpDir    = [System.IO.Path]::GetTempPath() + [System.Guid]::NewGuid().ToString()
+    $tmpDir  = [System.IO.Path]::GetTempPath() + [System.Guid]::NewGuid().ToString()
     New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 
-    $binFile   = "$tmpDir\$fileName"
-    $ckFile    = "$tmpDir\sha256sums.txt"
+    $binFile = "$tmpDir\$fileName"
+    $ckFile  = "$tmpDir\sha256sums.txt"
 
     try {
         if (-not (Invoke-Download -Url $dlUrl -OutFile $binFile -Label "Claude Code binary")) {
             Exit-WithError "Download failed. Try a different mirror or check your connection."
         }
 
-        # Checksum verification
+        # 7. Checksum
         if (-not $NoVerify) {
-            $ckDownloaded = Invoke-Download -Url $ckUrl -OutFile $ckFile -Label "checksums" -RetryCount 2
-            if ($ckDownloaded) {
+            $ckOk = Invoke-Download -Url $ckUrl -OutFile $ckFile -Label "checksums" -RetryCount 2
+            if ($ckOk) {
                 if (-not (Test-Checksum -FilePath $binFile -ChecksumFile $ckFile -FileName $fileName)) {
                     Exit-WithError "Checksum verification failed. The file may be corrupted."
                 }
@@ -355,40 +559,39 @@ function Main {
             }
         }
 
-        # Install
+        # 8. Install binary
         Write-Step "Installing..."
-        $destExe = $CLAUDE_EXE
-        if (Test-Path $destExe) {
-            # Kill any running claude process before replacing
-            Get-Process -Name "claude" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-            Remove-Item "$destExe.old" -Force -ErrorAction SilentlyContinue
-            Move-Item $destExe "$destExe.old" -Force -ErrorAction SilentlyContinue
+        if (Test-Path $CLAUDE_EXE) {
+            Get-Process -Name "claude" -ErrorAction SilentlyContinue |
+                Stop-Process -Force -ErrorAction SilentlyContinue
+            Remove-Item "$CLAUDE_EXE.old" -Force -ErrorAction SilentlyContinue
+            Move-Item $CLAUDE_EXE "$CLAUDE_EXE.old" -Force -ErrorAction SilentlyContinue
         }
-        Copy-Item $binFile $destExe -Force
-        Remove-Item "$destExe.old" -Force -ErrorAction SilentlyContinue
-
+        Copy-Item $binFile $CLAUDE_EXE -Force
+        Remove-Item "$CLAUDE_EXE.old" -Force -ErrorAction SilentlyContinue
         Set-Content -Path $VERSION_FILE -Value $targetVersion -Encoding UTF8
-        Write-Ok "Installed: $destExe"
+        Write-Ok "Installed: $CLAUDE_EXE"
 
     } finally {
         Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # PATH
+    # 9. PATH
     Add-ToUserPath $INSTALL_DIR
+    Refresh-SessionPath
 
-    # Refresh current session PATH
-    $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
-                [Environment]::GetEnvironmentVariable("Path", "User")
-
-    # Optional: CC Switch
+    # 10. Optional: CC Switch
     Write-Host ""
     $installCcSwitch = Read-Host "Install CC Switch (API Provider switcher)? [y/N]"
+    $ccSwitchInstalled = $false
     if ($installCcSwitch -match '^[Yy]') {
-        Install-CcSwitch -Mirror $SelectedMirror
+        $ccSwitchInstalled = Install-CcSwitch
     }
 
-    # Done
+    # 11. API / Provider configuration
+    Configure-ApiKey -CcSwitchInstalled $ccSwitchInstalled
+
+    # 12. Done
     Write-Host ""
     Write-Host "  ✓ Claude Code v$targetVersion installed!" -ForegroundColor Green
     Write-Host ""
@@ -396,8 +599,14 @@ function Main {
     Write-Host "    claude            — start Claude Code"
     Write-Host "    claude --version  — verify installation"
     Write-Host ""
+    if ($ccSwitchInstalled) {
+        Write-Host "  CC Switch: open from Start Menu to configure your API Provider." -ForegroundColor Cyan
+        Write-Host ""
+    }
     Write-Host "  To upgrade: re-run install.bat"
     Write-Host "  To uninstall: run uninstall.bat"
+    Write-Host ""
+    Write-Warn "Restart PowerShell for PATH changes to take effect."
     Write-Host ""
 }
 

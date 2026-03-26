@@ -10,10 +10,13 @@
 set -euo pipefail
 
 RELEASES_REPO="ProjectAILeap/claude-code-releases"
+CC_SWITCH_REPO="farion1231/cc-switch"
 DATA_DIR="${HOME}/.local/share/claude-code"
 VERSION_FILE="${DATA_DIR}/version"
+CLAUDE_JSON="${HOME}/.claude.json"
+CC_SWITCH_INSTALLED=false
 
-# ── Colors ───────────────────────────────────────────────────────────────────
+# ── Colors ────────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
     BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -21,20 +24,19 @@ else
     RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; NC=''
 fi
 
-info()    { printf "${BLUE}[INFO]${NC}  %s\n" "$*"; }
-ok()      { printf "${GREEN}[ OK ]${NC}  %s\n" "$*"; }
-warn()    { printf "${YELLOW}[WARN]${NC}  %s\n" "$*"; }
-err()     { printf "${RED}[ERR ]${NC}  %s\n" "$*" >&2; }
-step()    { printf "\n${BOLD}${CYAN}▶ %s${NC}\n" "$*"; }
-die()     { err "$*"; exit 1; }
+info()  { printf "${BLUE}[INFO]${NC}  %s\n" "$*"; }
+ok()    { printf "${GREEN}[ OK ]${NC}  %s\n" "$*"; }
+warn()  { printf "${YELLOW}[WARN]${NC}  %s\n" "$*"; }
+err()   { printf "${RED}[ERR ]${NC}  %s\n" "$*" >&2; }
+step()  { printf "\n${BOLD}${CYAN}▶ %s${NC}\n" "$*"; }
+die()   { err "$*"; exit 1; }
 
-# ── Detect platform ──────────────────────────────────────────────────────────
+# ── Detect platform ───────────────────────────────────────────────────────────
 detect_platform() {
     local os arch libc=""
     os="$(uname -s)"
     arch="$(uname -m)"
 
-    # Detect musl libc (Alpine, etc.)
     if ldd --version 2>&1 | grep -qi musl 2>/dev/null; then
         libc="-musl"
     fi
@@ -55,14 +57,14 @@ detect_platform() {
             esac
             ;;
         *)
-            die "Unsupported OS: $os. This script supports macOS and Linux only."
+            die "Unsupported OS: $os"
             ;;
     esac
 
     info "Platform: ${PLATFORM}"
 }
 
-# ── Install directory ────────────────────────────────────────────────────────
+# ── Install directory ─────────────────────────────────────────────────────────
 detect_install_dir() {
     if [[ "${PLATFORM}" == darwin-* ]]; then
         if [[ -w "/usr/local/bin" ]]; then
@@ -77,10 +79,7 @@ detect_install_dir() {
     info "Install dir: ${INSTALL_DIR}"
 }
 
-# ── Mirror selection ─────────────────────────────────────────────────────────
-# Each entry is a URL base that, when appended with /owner/repo/..., forms a valid download URL.
-# Prefix-proxy mirrors use: https://proxy.example.com/https://github.com/<path>
-# Domain-replacement mirrors use: https://mirror.example.com/<path>
+# ── Mirror selection ──────────────────────────────────────────────────────────
 MIRRORS=(
     "https://github.com"
     "https://ghfast.top/https://github.com"
@@ -113,11 +112,10 @@ select_mirror() {
 }
 
 make_download_url() {
-    # $1 = path starting with /owner/repo/...
     printf "%s%s" "${SELECTED_MIRROR}" "$1"
 }
 
-# ── Fetch latest version ─────────────────────────────────────────────────────
+# ── Fetch latest version ──────────────────────────────────────────────────────
 get_latest_version() {
     step "Fetching latest version..."
     local api_url="https://api.github.com/repos/${RELEASES_REPO}/releases/latest"
@@ -132,7 +130,6 @@ get_latest_version() {
             sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/')"
     fi
 
-    # Fallback: parse Location header from kkgithub redirect
     if [[ -z "${VERSION:-}" ]]; then
         info "GitHub API unavailable, trying fallback..."
         local location
@@ -146,7 +143,7 @@ get_latest_version() {
     info "Latest: v${VERSION}"
 }
 
-# ── Version check ────────────────────────────────────────────────────────────
+# ── Version check ─────────────────────────────────────────────────────────────
 check_installed_version() {
     INSTALLED_VERSION=""
     if [[ -f "$VERSION_FILE" ]]; then
@@ -155,9 +152,8 @@ check_installed_version() {
 
     if [[ -n "$INSTALLED_VERSION" ]]; then
         if [[ "$INSTALLED_VERSION" == "$VERSION" ]]; then
-            ok "Claude Code v${VERSION} is already up to date."
-            # Still offer to reinstall if binary is missing
             if command -v claude &>/dev/null || [[ -x "${INSTALL_DIR}/claude" ]]; then
+                ok "Claude Code v${VERSION} is already up to date."
                 exit 0
             fi
             info "Binary missing, reinstalling..."
@@ -169,18 +165,46 @@ check_installed_version() {
     fi
 }
 
-# ── Download & verify ────────────────────────────────────────────────────────
+# ── Git check (Linux only; macOS auto-prompts) ────────────────────────────────
+check_git() {
+    if [[ "${PLATFORM}" == darwin-* ]]; then
+        return  # macOS triggers Xcode CLT prompt automatically
+    fi
+
+    if command -v git &>/dev/null; then
+        local git_ver
+        git_ver="$(git --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+        ok "Git ${git_ver} found."
+        return
+    fi
+
+    warn "Git is not installed. Claude Code requires Git."
+    printf "\n  Install Git with your package manager:\n"
+    printf "    Debian/Ubuntu:  sudo apt install git\n"
+    printf "    RHEL/Fedora:    sudo yum install git  (or dnf install git)\n"
+    printf "    Arch:           sudo pacman -S git\n"
+    printf "    Alpine:         sudo apk add git\n\n"
+    printf "  Install Git first, then re-run this installer.\n\n"
+    printf "  Continue without Git? [y/N] "
+
+    local reply="n"
+    [ -t 0 ] && read -r reply </dev/tty || reply="n"
+    if [[ ! "$reply" =~ ^[Yy] ]]; then
+        exit 1
+    fi
+    warn "Continuing without Git — some Claude Code features may not work."
+}
+
+# ── Download & verify ─────────────────────────────────────────────────────────
 download_and_verify() {
     step "Downloading claude-${VERSION}-${PLATFORM}..."
 
     local filename="claude-${VERSION}-${PLATFORM}"
-    local dl_url
-    local ck_url
+    local dl_url ck_url
     dl_url="$(make_download_url "/${RELEASES_REPO}/releases/download/v${VERSION}/${filename}")"
     ck_url="$(make_download_url "/${RELEASES_REPO}/releases/download/v${VERSION}/sha256sums.txt")"
 
     TMP_DIR="$(mktemp -d)"
-    # Always clean up temp dir on exit
     trap 'rm -rf "${TMP_DIR}"' EXIT
 
     local bin_file="${TMP_DIR}/${filename}"
@@ -192,7 +216,6 @@ download_and_verify() {
         die "Download failed. Try a different mirror or check your connection."
     fi
 
-    # Checksum verification
     if curl -fsSL --connect-timeout 15 --max-time 30 \
          -o "${ck_file}" "${ck_url}" 2>/dev/null; then
         local expected actual
@@ -203,16 +226,13 @@ download_and_verify() {
             elif command -v shasum &>/dev/null; then
                 actual="$(shasum -a 256 "${bin_file}" | awk '{print $1}')"
             else
-                warn "No sha256sum or shasum found, skipping checksum."
+                warn "No sha256sum/shasum found, skipping checksum."
                 actual="$expected"
             fi
-
             if [[ "$actual" == "$expected" ]]; then
                 ok "SHA-256 verified."
             else
-                err "Checksum mismatch!"
-                err "  Expected: ${expected}"
-                err "  Got:      ${actual}"
+                err "Checksum mismatch!  Expected: ${expected}  Got: ${actual}"
                 die "The downloaded file may be corrupted."
             fi
         else
@@ -225,12 +245,11 @@ download_and_verify() {
     BINARY_FILE="${bin_file}"
 }
 
-# ── Install ───────────────────────────────────────────────────────────────────
+# ── Install binary ────────────────────────────────────────────────────────────
 install_binary() {
     step "Installing..."
     chmod +x "${BINARY_FILE}"
 
-    # Replace existing binary (use mv for atomic replace)
     local dest="${INSTALL_DIR}/claude"
     if [[ -f "$dest" ]]; then
         rm -f "${dest}.old" 2>/dev/null || true
@@ -241,7 +260,6 @@ install_binary() {
 
     mkdir -p "${DATA_DIR}"
     printf '%s\n' "${VERSION}" > "${VERSION_FILE}"
-
     ok "Installed: ${dest}"
 }
 
@@ -266,28 +284,213 @@ setup_path() {
         fi
     done
 
-    if $added; then
-        warn "Restart your shell or run: source ~/.bashrc  (or ~/.zshrc)"
+    $added || warn "Add manually: ${export_line}"
+}
+
+# ── Write ~/.claude.json ──────────────────────────────────────────────────────
+write_claude_json() {
+    if [[ -f "$CLAUDE_JSON" ]]; then
+        # Merge: add hasCompletedOnboarding if python3 available
+        if command -v python3 &>/dev/null; then
+            python3 - <<'PYEOF' 2>/dev/null && ok "~/.claude.json: onboarding skip set." && return
+import json, os
+p = os.path.expanduser("~/.claude.json")
+with open(p) as f:
+    d = json.load(f)
+d["hasCompletedOnboarding"] = True
+with open(p, "w") as f:
+    json.dump(d, f, indent=2)
+PYEOF
+        fi
+        # Fallback: just note we couldn't merge
+        warn "Could not update ~/.claude.json — set hasCompletedOnboarding manually if needed."
     else
-        warn "Add this to your shell profile:"
-        warn "  ${export_line}"
+        printf '{"hasCompletedOnboarding": true}\n' > "$CLAUDE_JSON"
+        ok "Created ~/.claude.json (onboarding skip)."
     fi
 }
 
-# ── Optional CC Switch ────────────────────────────────────────────────────────
-install_cc_switch_prompt() {
-    # Skip in non-interactive mode (piped stdin)
-    [ -t 0 ] || return
+# ── Configure API / Provider ──────────────────────────────────────────────────
+configure_api_key() {
+    step "Configuring API access..."
 
-    printf "\n${BOLD}Install CC Switch (API Provider switcher)?${NC} [y/N] "
-    read -r reply </dev/tty || return
-    [[ "$reply" =~ ^[Yy] ]] || return
+    # Already configured?
+    local existing_key="${ANTHROPIC_API_KEY:-}"
+    if [[ -n "$existing_key" ]] && [[ "$existing_key" != "PLACEHOLDER_USE_CC_SWITCH" ]]; then
+        ok "ANTHROPIC_API_KEY already set."
+        write_claude_json
+        return
+    fi
 
-    warn "CC Switch currently only provides Windows MSI packages."
-    info "Download: https://github.com/farion1231/cc-switch/releases"
+    # Test Anthropic connectivity
+    local can_reach=false
+    if curl -sf --connect-timeout 5 --max-time 5 \
+        -o /dev/null "https://api.anthropic.com" 2>/dev/null; then
+        can_reach=true
+    elif curl -sf --connect-timeout 5 --max-time 5 \
+        -o /dev/null -w "%{http_code}" "https://api.anthropic.com" 2>/dev/null | \
+        grep -qE '^[0-9]+'; then
+        can_reach=true
+    fi
+
+    local profile_files=()
+    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+        [[ -f "$rc" ]] && profile_files+=("$rc")
+    done
+
+    if $CC_SWITCH_INSTALLED; then
+        # CC Switch handles real config; write placeholder so claude starts immediately
+        info "CC Switch installed → setting placeholder provider config..."
+        for rc in "${profile_files[@]}"; do
+            grep -qF "ANTHROPIC_BASE_URL" "$rc" 2>/dev/null || \
+                printf '\nexport ANTHROPIC_BASE_URL="https://api.deepseek.com"\n' >> "$rc"
+            grep -qF "ANTHROPIC_API_KEY" "$rc" 2>/dev/null || \
+                printf 'export ANTHROPIC_API_KEY="PLACEHOLDER_USE_CC_SWITCH"\n' >> "$rc"
+        done
+        export ANTHROPIC_BASE_URL="https://api.deepseek.com"
+        export ANTHROPIC_API_KEY="PLACEHOLDER_USE_CC_SWITCH"
+        ok "Placeholder set. Open CC Switch to configure your Provider and API Key."
+
+    elif $can_reach; then
+        # Direct Anthropic access — prompt for real key
+        info "Anthropic API is reachable directly."
+        if [ -t 0 ]; then
+            printf "\n  ${YELLOW}Enter your Anthropic API Key (sk-ant-...), or press Enter to skip:${NC}\n"
+            printf "  API Key: "
+            read -r api_key </dev/tty
+            if [[ -n "${api_key:-}" ]]; then
+                local key_line="export ANTHROPIC_API_KEY=\"${api_key}\""
+                for rc in "${profile_files[@]}"; do
+                    grep -qF "ANTHROPIC_API_KEY" "$rc" 2>/dev/null || \
+                        printf '\n%s\n' "$key_line" >> "$rc"
+                done
+                export ANTHROPIC_API_KEY="${api_key}"
+                ok "API Key saved to shell profile."
+            else
+                warn "Skipped. Claude Code will prompt for API Key on first launch."
+            fi
+        fi
+
+    else
+        # No direct access, no CC Switch
+        warn "Cannot reach api.anthropic.com directly."
+        printf "\n"
+        printf "  ${YELLOW}Recommended options:${NC}\n"
+        printf "   1. Re-run installer and install CC Switch\n"
+        printf "      → Use DeepSeek / Kimi / GLM / Aliyun as provider (no VPN needed)\n"
+        printf "   2. Set up a proxy, then re-run installer\n"
+        printf "   3. Set manually after install:\n"
+        printf "      export ANTHROPIC_BASE_URL=\"https://api.your-provider.com\"\n"
+        printf "      export ANTHROPIC_API_KEY=\"your-api-key\"\n\n"
+    fi
+
+    write_claude_json
 }
 
-# ── Final message ─────────────────────────────────────────────────────────────
+# ── CC Switch: macOS ──────────────────────────────────────────────────────────
+install_cc_switch_macos() {
+    local cc_ver="$1"
+    local filename="CC-Switch-v${cc_ver}-macOS.tar.gz"
+    local cc_url
+    cc_url="$(make_download_url "/farion1231/cc-switch/releases/download/v${cc_ver}/${filename}")"
+    local tmp_file="${TMP_DIR}/${filename}"
+
+    info "Downloading ${filename}..."
+    if ! curl -fL --connect-timeout 30 --max-time 300 --progress-bar \
+         -o "$tmp_file" "$cc_url" 2>/dev/null; then
+        warn "CC Switch download failed."
+        info "Download manually: https://github.com/${CC_SWITCH_REPO}/releases"
+        CC_SWITCH_INSTALLED=false
+        return
+    fi
+
+    info "Extracting CC Switch.app to /Applications..."
+    local extract_dir="${TMP_DIR}/cc-switch-extract"
+    mkdir -p "$extract_dir"
+    tar -xzf "$tmp_file" -C "$extract_dir" 2>/dev/null || true
+
+    local app_path
+    app_path="$(find "$extract_dir" -name "CC Switch.app" -maxdepth 4 2>/dev/null | head -1)"
+
+    if [[ -n "$app_path" ]]; then
+        rm -rf "/Applications/CC Switch.app" 2>/dev/null || true
+        cp -R "$app_path" "/Applications/"
+        ok "CC Switch installed: /Applications/CC Switch.app"
+        CC_SWITCH_INSTALLED=true
+    else
+        warn "CC Switch.app not found in archive."
+        info "Archive contents:"
+        tar -tzf "$tmp_file" 2>/dev/null | head -10 || true
+        CC_SWITCH_INSTALLED=false
+    fi
+}
+
+# ── CC Switch: Linux ──────────────────────────────────────────────────────────
+install_cc_switch_linux() {
+    local cc_ver="$1"
+    local arch_suffix="x86_64"
+    [[ "${PLATFORM}" == *arm64* ]] && arch_suffix="arm64"
+
+    local filename="CC-Switch-v${cc_ver}-Linux-${arch_suffix}.AppImage"
+    local cc_url
+    cc_url="$(make_download_url "/farion1231/cc-switch/releases/download/v${cc_ver}/${filename}")"
+    local dest="${INSTALL_DIR}/cc-switch"
+
+    info "Downloading ${filename}..."
+    if curl -fL --connect-timeout 30 --max-time 300 --progress-bar \
+         -o "$dest" "$cc_url" 2>/dev/null; then
+        chmod +x "$dest"
+        ok "CC Switch installed: ${dest}"
+        CC_SWITCH_INSTALLED=true
+    else
+        warn "CC Switch download failed."
+        info "Download manually: https://github.com/${CC_SWITCH_REPO}/releases"
+        CC_SWITCH_INSTALLED=false
+    fi
+}
+
+# ── CC Switch prompt ──────────────────────────────────────────────────────────
+install_cc_switch_prompt() {
+    [ -t 0 ] || return   # Skip in non-interactive (piped) mode
+
+    printf "\n${BOLD}Install CC Switch (API Provider switcher)?${NC} [y/N] "
+    read -r reply </dev/tty || { CC_SWITCH_INSTALLED=false; return; }
+    if [[ ! "$reply" =~ ^[Yy] ]]; then
+        CC_SWITCH_INSTALLED=false
+        return
+    fi
+
+    step "Installing CC Switch..."
+
+    # Get version
+    local cc_ver=""
+    local cc_api_response
+    cc_api_response="$(curl -sf --connect-timeout 8 --max-time 15 \
+        -H "Accept: application/vnd.github.v3+json" \
+        "https://api.github.com/repos/${CC_SWITCH_REPO}/releases/latest" 2>/dev/null || true)"
+
+    if [[ -n "$cc_api_response" ]]; then
+        cc_ver="$(printf '%s' "$cc_api_response" | grep '"tag_name"' | head -1 | \
+            sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/')"
+    fi
+
+    if [[ -z "$cc_ver" ]]; then
+        warn "Could not fetch CC Switch version."
+        info "Download manually: https://github.com/${CC_SWITCH_REPO}/releases"
+        CC_SWITCH_INSTALLED=false
+        return
+    fi
+
+    info "CC Switch version: v${cc_ver}"
+
+    if [[ "${PLATFORM}" == darwin-* ]]; then
+        install_cc_switch_macos "$cc_ver"
+    elif [[ "${PLATFORM}" == linux-* ]]; then
+        install_cc_switch_linux "$cc_ver"
+    fi
+}
+
+# ── Done ──────────────────────────────────────────────────────────────────────
 print_done() {
     printf "\n"
     printf "${GREEN}${BOLD}  ✓ Claude Code v%s installed!${NC}\n\n" "${VERSION}"
@@ -295,7 +498,17 @@ print_done() {
     printf "    ${BOLD}claude${NC}            — start Claude Code\n"
     printf "    ${BOLD}claude --version${NC}  — verify installation\n"
     printf "\n"
-    printf "  To upgrade later, re-run this installer.\n"
+
+    if $CC_SWITCH_INSTALLED; then
+        if [[ "${PLATFORM}" == darwin-* ]]; then
+            printf "  ${CYAN}CC Switch: open from /Applications/CC Switch.app${NC}\n"
+        else
+            printf "  ${CYAN}CC Switch: run 'cc-switch' or open the AppImage${NC}\n"
+        fi
+        printf "\n"
+    fi
+
+    printf "  To upgrade: re-run this installer\n"
     printf "  To uninstall: run uninstall.sh\n\n"
 
     if ! printf '%s\n' "${PATH//:/$'\n'}" | grep -qx "${INSTALL_DIR}"; then
@@ -312,11 +525,13 @@ main() {
     detect_install_dir
     get_latest_version
     check_installed_version
+    check_git
     select_mirror
     download_and_verify
     install_binary
     setup_path
     install_cc_switch_prompt
+    configure_api_key
     print_done
 }
 

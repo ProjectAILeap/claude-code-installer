@@ -24,20 +24,24 @@ step()  { printf "\n${BOLD}${CYAN}▶ %s${NC}\n" "$*"; }
 
 ask() {
     printf "${BOLD}%s${NC} [y/N] " "$1"
+    local reply="n"
     read -r reply </dev/tty || reply="n"
     [[ "$reply" =~ ^[Yy] ]]
 }
 
-# ── Find claude binary ────────────────────────────────────────────────────────
-find_binary() {
-    BINARY_PATH=""
+# ── Detect platform ───────────────────────────────────────────────────────────
+detect_os() {
+    OS="$(uname -s)"
+}
 
-    # Check known install locations
+# ── Find claude binary ────────────────────────────────────────────────────────
+find_installation() {
+    BINARY_PATH=""
     for candidate in \
         "${HOME}/.local/bin/claude" \
         "/usr/local/bin/claude" \
         "$(command -v claude 2>/dev/null || true)"; do
-        if [[ -x "$candidate" ]]; then
+        if [[ -n "$candidate" ]] && [[ -x "$candidate" ]]; then
             BINARY_PATH="$candidate"
             break
         fi
@@ -47,33 +51,80 @@ find_binary() {
     if [[ -f "${DATA_DIR}/version" ]]; then
         INSTALLED_VERSION="$(cat "${DATA_DIR}/version" | tr -d '[:space:]')"
     fi
+
+    INSTALL_DIR=""
+    [[ -n "$BINARY_PATH" ]] && INSTALL_DIR="$(dirname "${BINARY_PATH}")"
 }
 
-# ── Remove PATH entries ───────────────────────────────────────────────────────
+# ── Detect CC Switch ──────────────────────────────────────────────────────────
+find_cc_switch() {
+    CC_SWITCH_PATH=""
+    CC_SWITCH_LABEL=""
+
+    if [[ "$OS" == "Darwin" ]]; then
+        if [[ -d "/Applications/CC Switch.app" ]]; then
+            CC_SWITCH_PATH="/Applications/CC Switch.app"
+            CC_SWITCH_LABEL="/Applications/CC Switch.app"
+        fi
+    else
+        # Linux: look for AppImage in common locations
+        for candidate in \
+            "${INSTALL_DIR}/cc-switch" \
+            "${HOME}/.local/bin/cc-switch" \
+            "$(command -v cc-switch 2>/dev/null || true)"; do
+            if [[ -n "$candidate" ]] && [[ -x "$candidate" ]]; then
+                CC_SWITCH_PATH="$candidate"
+                CC_SWITCH_LABEL="$candidate"
+                break
+            fi
+        done
+    fi
+}
+
+# ── Detect ANTHROPIC env vars in shell profiles ───────────────────────────────
+find_anthropic_env() {
+    PROFILES_WITH_ANTHROPIC=()
+    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+        if [[ -f "$rc" ]] && grep -qE "ANTHROPIC_(BASE_URL|API_KEY)" "$rc" 2>/dev/null; then
+            PROFILES_WITH_ANTHROPIC+=("$rc")
+        fi
+    done
+}
+
+# ── Remove PATH entries from shell profiles ───────────────────────────────────
 remove_path_entries() {
-    local binary_dir
-    binary_dir="$(dirname "${BINARY_PATH}")"
-    local modified=false
+    local binary_dir="$1"
 
     for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
         if [[ -f "$rc" ]] && grep -qF "$binary_dir" "$rc"; then
-            # Remove the export line and its comment
             sed -i.bak '/# Added by claude-code-installer/d' "$rc"
             sed -i.bak "/export PATH=.*${binary_dir//\//\\/}.*/d" "$rc"
             rm -f "${rc}.bak"
-            info "  Cleaned: $rc"
-            modified=true
+            info "  Cleaned PATH in: $rc"
         fi
     done
+}
 
-    $modified && ok "PATH entries removed." || info "No PATH entries found."
+# ── Remove ANTHROPIC env vars from shell profiles ─────────────────────────────
+remove_anthropic_env() {
+    for rc in "${PROFILES_WITH_ANTHROPIC[@]:-}"; do
+        [[ -z "$rc" ]] && continue
+        sed -i.bak '/ANTHROPIC_BASE_URL/d' "$rc"
+        sed -i.bak '/ANTHROPIC_API_KEY/d' "$rc"
+        rm -f "${rc}.bak"
+        info "  Cleaned ANTHROPIC_* from: $rc"
+    done
+    ok "ANTHROPIC_* environment variables removed."
 }
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 main() {
     printf "\n${BOLD}${CYAN}━━━ Claude Code Uninstaller ━━━${NC}  ProjectAILeap\n\n"
 
-    find_binary
+    detect_os
+    find_installation
+    find_cc_switch
+    find_anthropic_env
 
     if [[ -z "$BINARY_PATH" ]] && [[ -z "$INSTALLED_VERSION" ]]; then
         warn "Claude Code does not appear to be installed."
@@ -81,54 +132,62 @@ main() {
         exit 0
     fi
 
-    # Show what was found
+    # ── Show detected state ──────────────────────────────────────────────────
     step "Detected installation"
     [[ -n "$INSTALLED_VERSION" ]] && info "  Version:  v${INSTALLED_VERSION}"
     [[ -n "$BINARY_PATH"       ]] && info "  Binary:   ${BINARY_PATH}"
     info "  Data dir: ${DATA_DIR}"
-    info "  Config:   ${CLAUDE_CONFIG_DIR}"
-
+    [[ -n "$CC_SWITCH_LABEL"   ]] && info "  CC Switch: ${CC_SWITCH_LABEL}"
+    [[ ${#PROFILES_WITH_ANTHROPIC[@]} -gt 0 ]] && \
+        info "  ANTHROPIC_* env: ${PROFILES_WITH_ANTHROPIC[*]}"
     printf "\n"
 
-    # ── Selective removal ───────────────────────────────────────────────────
+    # ── Collect choices ──────────────────────────────────────────────────────
     REMOVE_BINARY=false
     REMOVE_DATA=false
     REMOVE_PATH=false
     REMOVE_CONFIG=false
+    REMOVE_CC_SWITCH=false
+    REMOVE_ANTHROPIC_ENV=false
 
-    if [[ -n "$BINARY_PATH" ]] && ask "Remove Claude Code binary (${BINARY_PATH})?"; then
-        REMOVE_BINARY=true
-    fi
+    [[ -n "$BINARY_PATH" ]] && \
+        ask "Remove Claude Code binary (${BINARY_PATH})?" && REMOVE_BINARY=true
 
-    if [[ -d "$DATA_DIR" ]] && ask "Remove version/data directory (~/.local/share/claude-code)?"; then
-        REMOVE_DATA=true
-    fi
+    [[ -d "$DATA_DIR" ]] && \
+        ask "Remove data directory (~/.local/share/claude-code)?" && REMOVE_DATA=true
 
-    if [[ -n "$BINARY_PATH" ]] && ask "Remove PATH entries from shell profiles?"; then
-        REMOVE_PATH=true
-    fi
+    [[ -n "$BINARY_PATH" ]] && \
+        ask "Remove PATH entries from shell profiles?" && REMOVE_PATH=true
 
-    if { [[ -d "$CLAUDE_CONFIG_DIR" ]] || [[ -f "$CLAUDE_CONFIG_FILE" ]]; } && \
-       ask "Remove Claude configuration (~/.claude/ and ~/.claude.json)?"; then
-        REMOVE_CONFIG=true
-    fi
+    { [[ -d "$CLAUDE_CONFIG_DIR" ]] || [[ -f "$CLAUDE_CONFIG_FILE" ]]; } && \
+        ask "Remove Claude configuration (~/.claude/ and ~/.claude.json)?" && REMOVE_CONFIG=true
 
-    # Confirm
-    printf "\n${YELLOW}The following will be removed:${NC}\n"
-    $REMOVE_BINARY && printf "  - Binary:      %s\n" "$BINARY_PATH"
-    $REMOVE_DATA   && printf "  - Data dir:    %s\n" "$DATA_DIR"
-    $REMOVE_PATH   && printf "  - PATH entries\n"
-    $REMOVE_CONFIG && printf "  - Config:      %s  %s\n" "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_FILE"
+    [[ -n "$CC_SWITCH_PATH" ]] && \
+        ask "Remove CC Switch (${CC_SWITCH_LABEL})?" && REMOVE_CC_SWITCH=true
 
-    if ! $REMOVE_BINARY && ! $REMOVE_DATA && ! $REMOVE_PATH && ! $REMOVE_CONFIG; then
+    [[ ${#PROFILES_WITH_ANTHROPIC[@]} -gt 0 ]] && \
+        ask "Remove ANTHROPIC_* variables from shell profiles?" && REMOVE_ANTHROPIC_ENV=true
+
+    # ── Confirm ──────────────────────────────────────────────────────────────
+    if ! $REMOVE_BINARY && ! $REMOVE_DATA && ! $REMOVE_PATH && \
+       ! $REMOVE_CONFIG && ! $REMOVE_CC_SWITCH && ! $REMOVE_ANTHROPIC_ENV; then
         printf "\nNothing selected. Exiting.\n"
         exit 0
     fi
 
+    printf "\n${YELLOW}The following will be removed:${NC}\n"
+    $REMOVE_BINARY       && printf "  - Binary:         %s\n" "$BINARY_PATH"
+    $REMOVE_DATA         && printf "  - Data dir:       %s\n" "$DATA_DIR"
+    $REMOVE_PATH         && printf "  - PATH entries\n"
+    $REMOVE_CONFIG       && printf "  - Config:         %s  %s\n" \
+                                    "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_FILE"
+    $REMOVE_CC_SWITCH    && printf "  - CC Switch:      %s\n" "$CC_SWITCH_LABEL"
+    $REMOVE_ANTHROPIC_ENV && printf "  - ANTHROPIC_* env from shell profiles\n"
+
     printf "\n"
     ask "Proceed?" || { printf "\nCancelled.\n"; exit 0; }
 
-    # ── Execute removals ────────────────────────────────────────────────────
+    # ── Execute ──────────────────────────────────────────────────────────────
     step "Removing..."
 
     if $REMOVE_BINARY; then
@@ -141,13 +200,27 @@ main() {
         ok "Removed: $DATA_DIR"
     fi
 
-    if $REMOVE_PATH; then
-        remove_path_entries
+    if $REMOVE_PATH && [[ -n "$INSTALL_DIR" ]]; then
+        remove_path_entries "$INSTALL_DIR"
+        ok "PATH entries removed."
     fi
 
     if $REMOVE_CONFIG; then
         [[ -d "$CLAUDE_CONFIG_DIR"  ]] && rm -rf "$CLAUDE_CONFIG_DIR"  && ok "Removed: $CLAUDE_CONFIG_DIR"
         [[ -f "$CLAUDE_CONFIG_FILE" ]] && rm -f  "$CLAUDE_CONFIG_FILE" && ok "Removed: $CLAUDE_CONFIG_FILE"
+    fi
+
+    if $REMOVE_CC_SWITCH && [[ -n "$CC_SWITCH_PATH" ]]; then
+        if [[ "$OS" == "Darwin" ]]; then
+            rm -rf "$CC_SWITCH_PATH"
+        else
+            rm -f "$CC_SWITCH_PATH"
+        fi
+        ok "Removed: ${CC_SWITCH_LABEL}"
+    fi
+
+    if $REMOVE_ANTHROPIC_ENV; then
+        remove_anthropic_env
     fi
 
     printf "\n${GREEN}${BOLD}  Uninstall complete.${NC}\n\n"
