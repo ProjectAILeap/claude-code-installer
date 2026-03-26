@@ -55,14 +55,25 @@ function Exit-WithError {
 # ── Mirror selection ──────────────────────────────────────────────────────────
 $global:SelectedMirror = ""
 
+function Get-MirrorTestUrl {
+    param([string]$Mirror)
+    # Proxy mirrors (ghfast.top / gh-proxy.com / mirror.ghproxy.com) support raw.githubusercontent.com
+    # but often reject HEAD on github.com HTML pages — test with a known raw file instead
+    if ($Mirror -match '/https://github\.com$') {
+        return ($Mirror -replace '/https://github\.com$', '/https://raw.githubusercontent.com') + `
+               "/ProjectAILeap/claude-code-installer/main/README.md"
+    }
+    # kkgithub.com is a domain mirror of github.com — test its releases page
+    return "$Mirror/$RELEASES_REPO/releases"
+}
+
 function Select-Mirror {
     Write-Step "Testing mirror speeds..."
-    $testPath = "/$RELEASES_REPO/releases"
 
     # Launch all mirror checks in parallel for speed comparison
     $jobs = @()
     foreach ($m in $MIRRORS) {
-        $url = "$m$testPath"
+        $url = Get-MirrorTestUrl $m
         $jobs += Start-Job -ScriptBlock {
             param($mirror, $u)
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
