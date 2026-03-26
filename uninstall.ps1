@@ -89,12 +89,19 @@ function Main {
     Write-Host "=== Claude Code Windows Uninstaller ===  ProjectAILeap" -ForegroundColor Cyan
     Write-Host ""
 
-    # Detect install location; also fall back to Get-Command in case binary is elsewhere
+    # Detect install location; also check Get-Command, but only if in a user-writable directory
+    # (avoids touching system shims in C:\Windows\system32 left by npm or other tools)
     $foundExes = @()
     if (Test-Path $CLAUDE_EXE) { $foundExes += $CLAUDE_EXE }
     $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
-    if ($claudeCmd -and ($foundExes -notcontains $claudeCmd.Source)) {
-        $foundExes += $claudeCmd.Source
+    if ($claudeCmd) {
+        $src = $claudeCmd.Source
+        $isUserPath = $src -like "$env:USERPROFILE\*" -or $src -like "$env:LOCALAPPDATA\*" -or $src -like "$env:APPDATA\*"
+        if ($isUserPath -and ($foundExes -notcontains $src)) {
+            $foundExes += $src
+        } elseif (-not $isUserPath) {
+            Write-Info "Note: claude also found at $src (system/npm path, not managed here -- skipping)"
+        }
     }
 
     $hasInstall = $foundExes.Count -gt 0
