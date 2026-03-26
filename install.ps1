@@ -7,29 +7,27 @@
     Supports GitHub mirror acceleration for users in China.
     Automatically installs Git for Windows if missing.
 .NOTES
-    Source:  https://github.com/ProjectAILeap/claude-code-installer
+    Source:   https://github.com/ProjectAILeap/claude-code-installer
     Binaries: https://github.com/ProjectAILeap/claude-code-releases
+    Official: https://claude.ai/install.ps1
 #>
 
-# Default parameters (script is run via iex; [CmdletBinding()]/param() not supported in that context)
-if (-not (Get-Variable 'Version'  -ErrorAction SilentlyContinue)) { $Version  = "" }
-if (-not (Get-Variable 'Force'    -ErrorAction SilentlyContinue)) { $Force    = $false }
+# Default parameters (iex context does not support param() blocks)
 if (-not (Get-Variable 'NoVerify' -ErrorAction SilentlyContinue)) { $NoVerify = $false }
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$ProgressPreference    = 'SilentlyContinue'   # speeds up Invoke-WebRequest (aligns with official)
 
 # -- Constants -----------------------------------------------------------------
-$RELEASES_REPO      = "ProjectAILeap/claude-code-releases"
-$GIT_REPO           = "git-for-windows/git"
-$CC_SWITCH_REPO     = "farion1231/cc-switch"
-$INSTALL_DIR        = "$env:LOCALAPPDATA\Programs\ClaudeCode"
-$VERSION_FILE       = "$INSTALL_DIR\version.txt"
-$CLAUDE_EXE         = "$INSTALL_DIR\claude.exe"
-$CLAUDE_JSON        = "$env:USERPROFILE\.claude.json"
-$GIT_MIN_VER        = [Version]"2.40.0"
-$GIT_FALLBACK_VER   = "2.47.1"
-$GIT_FALLBACK_TAG   = "v2.47.1.windows.1"
+$RELEASES_REPO    = "ProjectAILeap/claude-code-releases"
+$GIT_REPO         = "git-for-windows/git"
+$CC_SWITCH_REPO   = "farion1231/cc-switch"
+$DOWNLOAD_DIR     = "$env:USERPROFILE\.claude\downloads"   # aligns with official
+$CLAUDE_JSON      = "$env:USERPROFILE\.claude.json"
+$GIT_MIN_VER      = [Version]"2.40.0"
+$GIT_FALLBACK_VER = "2.47.1"
+$GIT_FALLBACK_TAG = "v2.47.1.windows.1"
 
 $MIRRORS = @(
     "https://github.com",
@@ -57,20 +55,16 @@ $global:SelectedMirror = ""
 
 function Get-MirrorTestUrl {
     param([string]$Mirror)
-    # Proxy mirrors (ghfast.top / gh-proxy.com / mirror.ghproxy.com) support raw.githubusercontent.com
-    # but often reject HEAD on github.com HTML pages -- test with a known raw file instead
     if ($Mirror -match '/https://github\.com$') {
         return ($Mirror -replace '/https://github\.com$', '/https://raw.githubusercontent.com') + `
                "/ProjectAILeap/claude-code-installer/main/README.md"
     }
-    # kkgithub.com is a domain mirror of github.com -- test its releases page
     return "$Mirror/$RELEASES_REPO/releases"
 }
 
 function Select-Mirror {
     Write-Step "Testing mirror speeds..."
 
-    # Launch all mirror checks in parallel for speed comparison
     $jobs = @()
     foreach ($m in $MIRRORS) {
         $url = Get-MirrorTestUrl $m
@@ -98,7 +92,6 @@ function Select-Mirror {
 
     $reachable = @($allResults | Where-Object { $_.Ok })
 
-    # Print all results
     foreach ($r in $allResults) {
         $t = $r.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
         if ($r.Ok) {
@@ -125,7 +118,7 @@ function Get-DownloadUrl {
     return "$global:SelectedMirror$Path"
 }
 
-# -- Fetch Claude Code latest version -----------------------------------------
+# -- Fetch latest version ------------------------------------------------------
 function Get-LatestVersion {
     Write-Step "Fetching latest Claude Code version..."
     $apiUrl = "https://api.github.com/repos/$RELEASES_REPO/releases/latest"
@@ -164,15 +157,19 @@ function Get-LatestVersion {
     return $ver
 }
 
-# -- Installed version ---------------------------------------------------------
+# -- Detect installed version via claude --version (aligns with official) ------
 function Get-InstalledVersion {
-    if (Test-Path $VERSION_FILE) {
-        return (Get-Content $VERSION_FILE -Raw).Trim()
+    $cmd = Get-Command claude -ErrorAction SilentlyContinue
+    if ($cmd) {
+        try {
+            $out = & $cmd.Source --version 2>&1
+            if ("$out" -match '(\d+\.\d+\.\d+)') { return $Matches[1] }
+        } catch {}
     }
     return ""
 }
 
-# -- Download helper with retry ------------------------------------------------
+# -- Download helper -----------------------------------------------------------
 function Invoke-Download {
     param(
         [string]$Url,
@@ -185,7 +182,6 @@ function Invoke-Download {
         Write-Info "Downloading $Label (attempt $i/$RetryCount)..."
         Write-Info "  URL: $Url"
         try {
-            # Invoke-WebRequest -OutFile shows terminal progress bar in PS 5.1
             Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing -ErrorAction Stop
             if (Test-Path $OutFile) {
                 $sizeMB = [math]::Round((Get-Item $OutFile).Length / 1MB, 1)
@@ -201,14 +197,13 @@ function Invoke-Download {
     return $false
 }
 
-# -- Multi-mirror download (tries all mirrors on failure) ---------------------
+# -- Multi-mirror download -----------------------------------------------------
 function Invoke-DownloadMirror {
     param(
         [string]$Path,
         [string]$OutFile,
         [string]$Label = "file"
     )
-    # Selected mirror first, then the rest
     $order = @($global:SelectedMirror) + ($MIRRORS | Where-Object { $_ -ne $global:SelectedMirror })
     $seen  = @()
     foreach ($m in $order) {
@@ -255,28 +250,10 @@ function Test-Checksum {
     }
 }
 
-# -- PATH management -----------------------------------------------------------
-function Add-ToUserPath {
-    param([string]$Dir)
-    $current = [Environment]::GetEnvironmentVariable("Path", "User")
-    $parts   = $current -split ";" | Where-Object { $_ -ne "" }
-    if ($parts -contains $Dir) { Write-Info "  $Dir already in user PATH."; return }
-    $newPath = ($parts + $Dir) -join ";"
-    [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-    Write-Ok "Added to user PATH: $Dir"
-}
-
-function Refresh-SessionPath {
-    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine"); if ($null -eq $machine) { $machine = "" }
-    $user    = [Environment]::GetEnvironmentVariable("Path", "User");    if ($null -eq $user)    { $user    = "" }
-    $env:Path = "$machine;$user"
-}
-
 # -- Ensure Git for Windows ----------------------------------------------------
 function Ensure-Git {
     Write-Step "Checking Git for Windows..."
 
-    # Locate git
     $gitExe = $null
     $gitCmd = Get-Command git -ErrorAction SilentlyContinue
     if ($gitCmd) { $gitExe = $gitCmd.Source }
@@ -289,7 +266,6 @@ function Ensure-Git {
         }
     }
 
-    # Check version
     $needInstall = $true
     if ($gitExe) {
         try {
@@ -312,7 +288,6 @@ function Ensure-Git {
 
     Write-Info "Installing Git for Windows..."
 
-    # -- Version detection: npmmirror (primary) -> GitHub API -> hardcoded ------
     $gitVer = $GIT_FALLBACK_VER
     $gitTag = $GIT_FALLBACK_TAG
 
@@ -346,7 +321,6 @@ function Ensure-Git {
         }
     }
 
-    # -- Download: npmmirror -> GitHub mirrors -> winget -> manual ---------------
     $exeName = "Git-$gitVer-64-bit.exe"
     $tmpExe  = "$env:TEMP\$exeName"
 
@@ -371,7 +345,6 @@ function Ensure-Git {
     if ($downloaded) {
         Write-Info "  Installing Git silently..."
         try {
-            # /CURRENTUSER installs to %LOCALAPPDATA%\Programs\Git — no admin/UAC required
             $proc = Start-Process -FilePath $tmpExe `
                 -ArgumentList '/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /CURRENTUSER /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"' `
                 -Wait -PassThru -ErrorAction Stop
@@ -385,7 +358,6 @@ function Ensure-Git {
         }
         Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue
     } else {
-        # winget fallback
         $winget = Get-Command winget -ErrorAction SilentlyContinue
         if ($winget) {
             Write-Info "  Trying winget..."
@@ -402,12 +374,14 @@ function Ensure-Git {
             Write-Warn "Could not install Git automatically."
             Write-Info "Download manually: https://git-scm.com/download/win"
             Write-Warn "Some Claude Code features may not work without Git."
-            return   # Non-blocking: continue with Claude Code install
+            return
         }
     }
 
     # Refresh PATH so git is available in current session
-    Refresh-SessionPath
+    $machine = [Environment]::GetEnvironmentVariable("Path", "Machine"); if ($null -eq $machine) { $machine = "" }
+    $user    = [Environment]::GetEnvironmentVariable("Path", "User");    if ($null -eq $user)    { $user    = "" }
+    $env:Path = "$machine;$user"
 }
 
 # -- Write ~/.claude.json ------------------------------------------------------
@@ -435,7 +409,6 @@ function Configure-ApiKey {
 
     Write-Step "Configuring API access..."
 
-    # Already configured by user?
     $existingKey = [Environment]::GetEnvironmentVariable("ANTHROPIC_API_KEY", "User")
     if ($existingKey -and $existingKey -ne "PLACEHOLDER_USE_CC_SWITCH") {
         Write-Ok "ANTHROPIC_API_KEY already configured."
@@ -443,19 +416,16 @@ function Configure-ApiKey {
         return
     }
 
-    # Test Anthropic connectivity (timeout 5s)
     $canReach = $false
     try {
         Invoke-WebRequest -Uri "https://api.anthropic.com" -Method Head `
             -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop | Out-Null
         $canReach = $true
     } catch {
-        # Connection refused / 4xx still means reachable
         if ($_.Exception.Response -ne $null) { $canReach = $true }
     }
 
     if ($CcSwitchInstalled) {
-        # CC Switch will handle real configuration; write placeholder so claude starts
         Write-Info "CC Switch installed -> setting placeholder provider config..."
         [Environment]::SetEnvironmentVariable("ANTHROPIC_BASE_URL", "https://api.deepseek.com", "User")
         [Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY",  "PLACEHOLDER_USE_CC_SWITCH", "User")
@@ -464,7 +434,6 @@ function Configure-ApiKey {
         Write-Ok "Placeholder set. Open CC Switch to configure your Provider and API Key."
 
     } elseif ($canReach) {
-        # Direct Anthropic access -- prompt for real key
         Write-Info "Anthropic API is reachable directly."
         Write-Host ""
         Write-Host "  Enter your Anthropic API Key (sk-ant-...), or press Enter to skip:" `
@@ -479,7 +448,6 @@ function Configure-ApiKey {
         }
 
     } else {
-        # No direct access, no CC Switch
         Write-Warn "Cannot reach api.anthropic.com directly."
         Write-Host ""
         Write-Host "  Recommended options:" -ForegroundColor Yellow
@@ -564,127 +532,94 @@ function Main {
     Write-Host "Source: github.com/ProjectAILeap/claude-code-releases" -ForegroundColor Gray
     Write-Host ""
 
-    # 1. Resolve target version
-    $targetVersion = $Version
-    if (-not $targetVersion) { $targetVersion = Get-LatestVersion }
-    else { Write-Info "Pinned version: v$targetVersion" }
+    # 1. 32-bit check (aligns with official)
+    if (-not [Environment]::Is64BitProcess) {
+        Exit-WithError "Claude Code does not support 32-bit Windows. Please use a 64-bit version of Windows."
+    }
 
-    # 2. Check installed version
+    # 2. Platform (aligns with official: supports win32-arm64)
+    $platform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "win32-arm64" } else { "win32-x64" }
+
+    # 3. Resolve target version
+    $targetVersion = Get-LatestVersion
+
+    # 4. Check installed version via claude --version (aligns with official)
     $installedVersion = Get-InstalledVersion
+    if ($installedVersion -eq $targetVersion) {
+        Write-Ok "Claude Code v$targetVersion is already up to date."
+        exit 0
+    }
     if ($installedVersion) {
-        if ($installedVersion -eq $targetVersion -and -not $Force) {
-            if (Test-Path $CLAUDE_EXE) {
-                Write-Ok "Claude Code v$targetVersion is already up to date."
-                exit 0
-            }
-            Write-Info "Binary missing, reinstalling..."
-        } elseif ($installedVersion -ne $targetVersion) {
-            Write-Info "Upgrading: v$installedVersion -> v$targetVersion"
-        }
+        Write-Info "Upgrading: v$installedVersion -> v$targetVersion"
     } else {
         Write-Info "Installing Claude Code v$targetVersion"
     }
 
-    # 3. Select mirror
+    # 5. Select fastest mirror
     Select-Mirror
 
-    # 4. Ensure Git (auto-install if missing/outdated)
+    # 6. Ensure Git
     Ensure-Git
 
-    # 5. Prepare install dir
-    if (-not (Test-Path $INSTALL_DIR)) {
-        New-Item -ItemType Directory -Path $INSTALL_DIR -Force | Out-Null
-    }
+    # 7. Prepare download dir (aligns with official: ~/.claude/downloads)
+    New-Item -ItemType Directory -Force -Path $DOWNLOAD_DIR | Out-Null
 
-    # 6. Download Claude Code binary
-    $fileName  = "claude-$targetVersion-win32-x64.exe"
+    $fileName  = "claude-$targetVersion-$platform.exe"
     $dlPath    = "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
     $ckPath    = "/$RELEASES_REPO/releases/download/v$targetVersion/sha256sums.txt"
-    $cachedBin = "$env:TEMP\$fileName"
-    $cachedCk  = "$env:TEMP\sha256sums-$targetVersion.txt"
+    $binaryPath = "$DOWNLOAD_DIR\$fileName"
+    $ckFile    = "$DOWNLOAD_DIR\sha256sums-$targetVersion.txt"
 
-    $tmpDir  = [System.IO.Path]::GetTempPath() + [System.Guid]::NewGuid().ToString()
-    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
-
-    $binFile = "$tmpDir\$fileName"
-    $ckFile  = "$tmpDir\sha256sums.txt"
-
-    try {
-        # Download checksums first (needed for cache verification too)
-        $ckOk = $false
-        if (Test-Path $cachedCk) {
-            Copy-Item $cachedCk $ckFile -Force
-            $ckOk = $true
-        } else {
-            $ckOk = Invoke-DownloadMirror -Path $ckPath -OutFile $ckFile -Label "checksums"
-            if ($ckOk) { Copy-Item $ckFile $cachedCk -Force -ErrorAction SilentlyContinue }
-        }
-
-        # Use cached binary if present; verify checksum if available
-        $needDownload = $true
-        if (Test-Path $cachedBin) {
-            if ($ckOk) {
-                if (Test-Checksum -FilePath $cachedBin -ChecksumFile $ckFile -FileName $fileName) {
-                    Write-Step "Using cached $fileName (checksum OK)..."
-                    Copy-Item $cachedBin $binFile -Force
-                    $needDownload = $false
-                } else {
-                    Write-Warn "Cached file checksum mismatch, re-downloading..."
-                    Remove-Item $cachedBin -Force -ErrorAction SilentlyContinue
-                }
-            } else {
-                # Checksum file unavailable — reuse cache without verification
-                Write-Step "Using cached $fileName (checksum unavailable, skipping verification)..."
-                Copy-Item $cachedBin $binFile -Force
-                $needDownload = $false
-            }
-        }
-
-        if ($needDownload) {
-            Write-Step "Downloading $fileName..."
-            if (-not (Invoke-DownloadMirror -Path $dlPath -OutFile $binFile -Label "Claude Code binary")) {
-                Exit-WithError "Download failed. Try a different mirror or check your connection."
-            }
-            Copy-Item $binFile $cachedBin -Force -ErrorAction SilentlyContinue
-        }
-
-        # 7. Checksum (for fresh downloads)
-        if ($needDownload -and -not $NoVerify) {
-            if ($ckOk) {
-                if (-not (Test-Checksum -FilePath $binFile -ChecksumFile $ckFile -FileName $fileName)) {
-                    Remove-Item $cachedBin -Force -ErrorAction SilentlyContinue
-                    Exit-WithError "Checksum verification failed. The file may be corrupted."
-                }
-            } else {
-                Write-Warn "Could not download checksums, skipping verification."
-            }
-        }
-
-        # 8. Install binary
-        Write-Step "Installing..."
-        if (Test-Path $CLAUDE_EXE) {
-            Get-Process -Name "claude" -ErrorAction SilentlyContinue |
-                Stop-Process -Force -ErrorAction SilentlyContinue
-            Remove-Item "$CLAUDE_EXE.old" -Force -ErrorAction SilentlyContinue
-            Move-Item $CLAUDE_EXE "$CLAUDE_EXE.old" -Force -ErrorAction SilentlyContinue
-        }
-        Copy-Item $binFile $CLAUDE_EXE -Force
-        Remove-Item "$CLAUDE_EXE.old" -Force -ErrorAction SilentlyContinue
-        # Remove Zone.Identifier (Mark-of-the-Web) so Windows runs it directly
-        # without "How do you want to open this file?" or SmartScreen prompts
-        Unblock-File -Path $CLAUDE_EXE -ErrorAction SilentlyContinue
-        Set-Content -Path $VERSION_FILE -Value $targetVersion -Encoding UTF8
-        Write-Ok "Installed: $CLAUDE_EXE"
-
-    } finally {
-        Remove-Item -Path $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+    # 8. Download checksums (for cache verification)
+    $ckOk = $false
+    if (Test-Path $ckFile) {
+        $ckOk = $true
+    } else {
+        $ckOk = Invoke-DownloadMirror -Path $ckPath -OutFile $ckFile -Label "checksums"
     }
 
-    # 9. PATH
-    Add-ToUserPath $INSTALL_DIR
-    Refresh-SessionPath
+    # 9. Download binary (with cache)
+    $needDownload = $true
+    if (Test-Path $binaryPath) {
+        if ($ckOk) {
+            if (Test-Checksum -FilePath $binaryPath -ChecksumFile $ckFile -FileName $fileName) {
+                Write-Step "Using cached $fileName (checksum OK)..."
+                $needDownload = $false
+            } else {
+                Write-Warn "Cached file checksum mismatch, re-downloading..."
+                Remove-Item $binaryPath -Force -ErrorAction SilentlyContinue
+            }
+        } else {
+            Write-Step "Using cached $fileName (checksum unavailable)..."
+            $needDownload = $false
+        }
+    }
 
-    # 10. Optional: CC Switch
+    if ($needDownload) {
+        Write-Step "Downloading $fileName..."
+        if (-not (Invoke-DownloadMirror -Path $dlPath -OutFile $binaryPath -Label "Claude Code binary")) {
+            Exit-WithError "Download failed. Try a different mirror or check your connection."
+        }
+        if ($needDownload -and -not $NoVerify -and $ckOk) {
+            if (-not (Test-Checksum -FilePath $binaryPath -ChecksumFile $ckFile -FileName $fileName)) {
+                Remove-Item $binaryPath -Force -ErrorAction SilentlyContinue
+                Exit-WithError "Checksum verification failed. The file may be corrupted."
+            }
+        }
+    }
+
+    # 10. Remove Zone.Identifier so Windows runs it without prompts
+    Unblock-File -Path $binaryPath -ErrorAction SilentlyContinue
+
+    # 11. Run install (aligns with official: let the binary handle setup)
+    Write-Step "Setting up Claude Code..."
+    try {
+        & $binaryPath install
+    } catch {
+        Exit-WithError "Installation failed: $($_.Exception.Message)"
+    }
+
+    # 12. Optional: CC Switch
     Write-Host ""
     $installCcSwitch = Read-Host "Install CC Switch (API Provider switcher)? [y/N]"
     $ccSwitchInstalled = $false
@@ -692,12 +627,12 @@ function Main {
         $ccSwitchInstalled = Install-CcSwitch
     }
 
-    # 11. API / Provider configuration
+    # 13. API / Provider configuration
     Configure-ApiKey -CcSwitchInstalled $ccSwitchInstalled
 
-    # 12. Done
+    # 14. Done
     Write-Host ""
-    Write-Host "  [OK] Claude Code v$targetVersion installed!" -ForegroundColor Green
+    Write-Output "[OK] Installation complete!"
     Write-Host ""
     Write-Host "  Quick start:"
     Write-Host "    claude            -- start Claude Code"
@@ -709,8 +644,6 @@ function Main {
     }
     Write-Host "  To upgrade: re-run install.bat"
     Write-Host "  To uninstall: run uninstall.bat"
-    Write-Host ""
-    Write-Warn "Restart PowerShell for PATH changes to take effect."
     Write-Host ""
 }
 
