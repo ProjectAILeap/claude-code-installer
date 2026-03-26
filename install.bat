@@ -25,7 +25,7 @@ if %PS_MAJOR% LSS 5 (
 :: ── Run installer ───────────────────────────────────────────────────────────
 echo.
 echo  Claude Code Installer - ProjectAILeap
-echo  ─────────────────────────────────────
+echo  -------------------------------------
 echo.
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" %*
