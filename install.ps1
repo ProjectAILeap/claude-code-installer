@@ -636,7 +636,10 @@ function Main {
         }
     }
 
-    # 10. Run install (aligns with official: let the binary handle setup)
+    # 10. Remove Zone.Identifier (cached files may not have been unblocked)
+    Unblock-File -Path $binaryPath -ErrorAction SilentlyContinue
+
+    # 11. Run install (aligns with official: let the binary handle setup)
     Write-Step "Setting up Claude Code..."
     try {
         & $binaryPath install
