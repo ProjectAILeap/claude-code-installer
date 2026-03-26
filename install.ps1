@@ -204,7 +204,7 @@ function Invoke-Download {
                 Write-Ok "Downloaded $Label ($sizeMB MB)"
                 return $true
             }
-            Write-Warn "  Attempt $i: job completed but output file missing."
+            Write-Warn "  Attempt ${i}: job completed but output file missing."
         } else {
             $errMsg = ""
             if ($job.State -eq 'Failed') {
