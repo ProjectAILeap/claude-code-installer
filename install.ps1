@@ -79,20 +79,30 @@ function Select-Mirror {
     }
 
     $jobs | Wait-Job -Timeout 10 | Out-Null
-    $results = $jobs | ForEach-Object {
+    $allResults = $jobs | ForEach-Object {
         if ($_.State -eq 'Completed') { Receive-Job $_ -ErrorAction SilentlyContinue }
-    } | Where-Object { $_ -and $_.Ok } | Sort-Object Ms
+        else { [PSCustomObject]@{ Mirror = ""; Ms = 99999; Ok = $false } }
+    } | Where-Object { $_ -and $_.Mirror } | Sort-Object @{e='Ok';desc=$true}, Ms
     $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
 
-    if ($results -and $results.Count -gt 0) {
-        $best = $results[0]
+    $reachable = $allResults | Where-Object { $_.Ok }
+
+    # Print all results
+    foreach ($r in $allResults) {
+        $t = $r.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
+        if ($r.Ok) {
+            Write-Info ("  {0,-30} {1,6} ms" -f $t, $r.Ms)
+        } else {
+            Write-Info ("  {0,-30} timeout" -f $t)
+        }
+    }
+    Write-Host ""
+
+    if ($reachable -and $reachable.Count -gt 0) {
+        $best = $reachable | Select-Object -First 1
         $global:SelectedMirror = $best.Mirror
         $tag = $best.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
-        Write-Ok "Fastest: $tag ($($best.Ms) ms)"
-        foreach ($r in ($results | Select-Object -Skip 1)) {
-            $t = $r.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
-            Write-Info "  $t ($($r.Ms) ms)"
-        }
+        Write-Ok "Selected: $tag ($($best.Ms) ms)"
     } else {
         $global:SelectedMirror = "https://ghfast.top/https://github.com"
         Write-Warn "All mirror checks timed out. Defaulting to ghfast.top."
