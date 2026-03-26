@@ -357,9 +357,14 @@ function Ensure-Git {
     ) | Select-Object -Unique
 
     $downloaded = $false
-    foreach ($url in $gitUrls) {
-        if (Invoke-Download -Url $url -OutFile $tmpExe -Label "Git $gitVer") {
-            $downloaded = $true; break
+    if (Test-Path $tmpExe) {
+        Write-Info "  Installer already cached: $exeName"
+        $downloaded = $true
+    } else {
+        foreach ($url in $gitUrls) {
+            if (Invoke-Download -Url $url -OutFile $tmpExe -Label "Git $gitVer") {
+                $downloaded = $true; break
+            }
         }
     }
 
