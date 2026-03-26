@@ -12,6 +12,7 @@
 | 操作系统 | 架构 | Claude Code | CC Switch |
 |---------|------|:-----------:|:---------:|
 | Windows | x64  | ✅ | ✅ MSI |
+| Windows | ARM64 | ✅ | ✅ MSI |
 | macOS   | Apple Silicon (arm64) | ✅ | ✅ Universal |
 | macOS   | Intel (x64) | ✅ | ✅ Universal |
 | Linux   | x64 (glibc / musl) | ✅ | ✅ AppImage |
@@ -51,8 +52,6 @@ irm https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/i
 irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/install.ps1 | iex
 ```
 
-> **提示：** 安装完成后需重启 PowerShell 窗口，`claude` 命令才会生效。
-
 ---
 
 ## 安装过程说明
@@ -62,10 +61,10 @@ irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-co
 | 步骤 | 说明 |
 |------|------|
 | 1. 检测版本 | 从 GitHub Releases 获取最新版本号 |
-| 2. 选择镜像 | 自动测速，选最快可用的 GitHub 镜像源 |
-| 3. 安装 Git（仅 Windows） | 未安装时自动下载安装 Git for Windows |
-| 4. 下载二进制 | 下载 Claude Code 官方二进制，验证 SHA-256 |
-| 5. 配置 PATH | 将安装目录加入用户 PATH |
+| 2. 选择镜像 | 自动并行测速，选最快可用的 GitHub 镜像源 |
+| 3. 安装 Git（仅 Windows） | 未安装时自动下载安装 Git for Windows（无需管理员权限） |
+| 4. 下载二进制 | 下载 Claude Code 官方二进制，验证 SHA-256，缓存至 `~/.claude/downloads` |
+| 5. 自动安装 | 执行 `claude install`，由二进制自动完成 PATH 配置和 shell 集成 |
 | 6. 安装 CC Switch（可选） | 询问是否安装 API Provider 切换工具 |
 | 7. 配置 API 访问 | 根据网络环境自动引导配置，确保能直接进入 Claude Code |
 
@@ -84,7 +83,7 @@ irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-co
 
 ## 镜像加速说明
 
-脚本内置 5 个 GitHub 镜像源，自动测速选最快可用源（无需手动配置）：
+脚本内置 5 个 GitHub 镜像源，自动并行测速选最快可用源（无需手动配置）：
 
 | 镜像 | 类型 |
 |------|------|
@@ -118,7 +117,7 @@ irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-co
 
 ## 升级 / Upgrade
 
-重新运行安装脚本即可。脚本自动检测已安装版本，仅在有新版本时下载。
+重新运行安装脚本即可。脚本自动检测已安装版本（`claude --version`），仅在有新版本时下载。
 
 ```bash
 # macOS / Linux
@@ -147,10 +146,10 @@ curl -fsSL https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer
 
 卸载时可交互选择删除：
 
-- Claude Code 二进制
-- 安装目录
+- Claude Code 二进制及安装目录
 - PATH 条目
 - `~/.claude/` 配置目录 / `~/.claude.json`
+- `~/.claude/downloads` 缓存目录
 - CC Switch（若已安装）
 - `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` 环境变量
 
@@ -158,11 +157,11 @@ curl -fsSL https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer
 
 ## 安装位置
 
-| 平台 | Claude Code | 版本记录 |
+| 平台 | Claude Code | 下载缓存 |
 |------|------------|---------|
-| Windows | `%LOCALAPPDATA%\Programs\ClaudeCode\claude.exe` | 同目录 `version.txt` |
-| macOS | `/usr/local/bin/claude` 或 `~/.local/bin/claude` | `~/.local/share/claude-code/version` |
-| Linux | `~/.local/bin/claude` | `~/.local/share/claude-code/version` |
+| Windows | 由 `claude install` 自动管理（运行 `where claude` 查看） | `%USERPROFILE%\.claude\downloads` |
+| macOS | `/usr/local/bin/claude` 或 `~/.local/bin/claude` | `~/.local/share/claude-code/` |
+| Linux | `~/.local/bin/claude` | `~/.local/share/claude-code/` |
 
 ---
 
@@ -170,7 +169,7 @@ curl -fsSL https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer
 
 | 平台 | 要求 |
 |------|------|
-| Windows | PowerShell 5.1+（系统自带）；Git 自动安装（若缺失） |
+| Windows | 64-bit；PowerShell 5.1+（系统自带）；Git 自动安装（若缺失） |
 | macOS | curl（系统自带）；Git 缺失时系统会提示安装 Xcode CLT |
 | Linux | curl、bash；需预先安装 Git（`apt/yum/pacman install git`） |
 
@@ -189,19 +188,22 @@ curl -fsSL https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer
 ## 常见问题
 
 **Q: 与 npm 安装方式冲突吗？**
-> 不冲突。本方案安装到独立目录，与 npm 全局安装互不干扰。建议统一使用一种方式避免版本混乱。
+> 不冲突。本方案与 npm 全局安装互不干扰。建议统一使用一种方式避免版本混乱。
 
 **Q: 需要管理员权限吗？**
-> 不需要。Windows 安装到用户目录 `%LOCALAPPDATA%`，macOS/Linux 默认安装到 `~/.local/bin`，均无需 root/管理员权限。
+> 不需要。Windows 的 Git 和 Claude Code 均安装到用户目录，macOS/Linux 默认安装到 `~/.local/bin`，均无需 root/管理员权限。
 
 **Q: Windows 上没有安装 Git 怎么办？**
-> 安装脚本会自动检测并安装 Git for Windows（优先从 npmmirror 下载，速度快），无需手动操作。
+> 安装脚本会自动检测并静默安装 Git for Windows（优先从 npmmirror 下载，无需管理员权限），无需手动操作。
 
 **Q: 如何验证二进制完整性？**
-> 脚本自动下载 `sha256sums.txt` 并验证 SHA-256 校验和，与二进制使用相同镜像源下载。
+> 脚本自动下载 `sha256sums.txt` 并验证 SHA-256 校验和，与二进制使用相同镜像源下载。已缓存的二进制再次安装时也会重新校验。
 
 **Q: 安装完提示无法连接 Anthropic API 怎么办？**
 > 中国大陆直连 api.anthropic.com 通常不可用。建议安装 CC Switch 并配置国内 Provider（DeepSeek 等）。
+
+**Q: 支持 Windows ARM64 吗？**
+> 支持。脚本自动检测架构，ARM64 设备会下载 `win32-arm64` 版本。
 
 ---
 
