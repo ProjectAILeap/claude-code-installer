@@ -642,6 +642,7 @@ function Main {
     # 11. Run install; fall back to manual setup if it fails (e.g. CDN unreachable in China)
     Write-Step "Setting up Claude Code..."
     Write-Info "Running claude install (may download additional components)..."
+    Write-Info "Please wait up to 90s -- if CDN is unreachable, manual fallback will be used."
 
     $installJob = Start-Job -ScriptBlock {
         param($b)
@@ -656,7 +657,7 @@ function Main {
     } else {
         Stop-Job  $installJob -ErrorAction SilentlyContinue
         Remove-Job $installJob -Force -ErrorAction SilentlyContinue
-        Write-Warn "claude install timed out (90s)."
+        Write-Warn "claude install timed out (90s). CDN may be unreachable -- switching to manual fallback."
     }
 
     # Refresh PATH from registry so we can detect what install set up
