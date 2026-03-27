@@ -85,7 +85,7 @@ function Select-Mirror {
             try {
                 # Use GET instead of HEAD -- proxy mirrors often reject HEAD requests
                 # but handle GET fine.  The test file is tiny (<1 KB) so this is fast.
-                Invoke-WebRequest -Uri $u -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop | Out-Null
+                Invoke-WebRequest -Uri $u -TimeoutSec 15 -UseBasicParsing -ErrorAction Stop | Out-Null
                 $sw.Stop()
                 [PSCustomObject]@{ Mirror = $mirror; Ms = $sw.ElapsedMilliseconds; Ok = $true }
             } catch {
@@ -95,7 +95,7 @@ function Select-Mirror {
         } -ArgumentList $m, $url
     }
 
-    $jobs | Wait-Job -Timeout 12 | Out-Null
+    $jobs | Wait-Job -Timeout 18 | Out-Null
     $allResults = @($jobs | ForEach-Object {
         if ($_.State -eq 'Completed') { Receive-Job $_ -ErrorAction SilentlyContinue }
         else { [PSCustomObject]@{ Mirror = ""; Ms = 99999; Ok = $false } }
@@ -405,8 +405,8 @@ function Ensure-Git {
         Write-Info "  Installing Git silently..."
         try {
             $proc = Start-Process -FilePath $tmpExe `
-                -ArgumentList '/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS /CURRENTUSER /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"' `
-                -Wait -PassThru -ErrorAction Stop
+                -ArgumentList '/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /CURRENTUSER /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"' `
+                -Wait -PassThru -NoNewWindow -ErrorAction Stop
             if ($proc.ExitCode -eq 0) {
                 Write-Ok "Git installed."
             } else {
