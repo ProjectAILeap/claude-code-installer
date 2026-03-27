@@ -92,7 +92,7 @@ function Select-Mirror {
 
     # Collect results: wait up to 18s total for all tasks
     $deadline = [System.DateTime]::UtcNow.AddSeconds(18)
-    $allResults = @(foreach ($m in $tasks.Keys) {
+    $rawResults = foreach ($m in $tasks.Keys) {
         $task = $tasks[$m]
         $remaining = [int][math]::Max(0, ($deadline - [System.DateTime]::UtcNow).TotalMilliseconds)
         $completed = $task.Wait($remaining)
@@ -105,8 +105,9 @@ function Select-Mirror {
             try { $task.Result.Dispose() } catch {}
         }
         [PSCustomObject]@{ Mirror = $m; Ms = $ms; Ok = $ok }
-    } | Sort-Object @{Expression='Ok';Descending=$true}, Ms)
+    }
     $client.Dispose()
+    $allResults = @($rawResults | Sort-Object @{Expression='Ok';Descending=$true}, Ms)
 
     $reachable = @($allResults | Where-Object { $_.Ok })
 
