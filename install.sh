@@ -51,12 +51,13 @@ die()   { err "$*"; exit 1; }
 # Avoids python3 -- on macOS the /usr/bin/python3 stub triggers a
 # "install Command Line Developer Tools" dialog when executed.
 _now_ms() {
-    # GNU date (Linux)
-    date +%s%3N 2>/dev/null | grep -qE '^[0-9]{13}$' \
-        && date +%s%3N && return
-    # perl (macOS default, no CLT dialog)
+    local ms
+    # GNU date -- works on Linux; macOS BSD date does not support %3N
+    ms=$(date +%s%3N 2>/dev/null)
+    [[ "$ms" =~ ^[0-9]{13}$ ]] && echo "$ms" && return
+    # perl with Time::HiRes -- available on macOS and most Linux distros by default
     perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000' 2>/dev/null && return
-    # Fallback: second precision
+    # Last resort: second precision only
     echo $(($(date +%s) * 1000))
 }
 
