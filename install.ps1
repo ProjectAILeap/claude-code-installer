@@ -415,9 +415,19 @@ function Ensure-Git {
     if ($downloaded) {
         Write-Info "  Installing Git silently..."
         try {
+            # Admin: system-wide install (no /CURRENTUSER, no UAC needed since already elevated)
+            # Non-admin: per-user install (/CURRENTUSER avoids UAC, installs to %LOCALAPPDATA%)
+            # -NoNewWindow is only valid for console processes; Inno Setup is GUI, omit it.
+            $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+                [Security.Principal.WindowsBuiltInRole]::Administrator)
+            $gitArgs = if ($isAdmin) {
+                '/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"'
+            } else {
+                '/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /CURRENTUSER /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"'
+            }
             $proc = Start-Process -FilePath $tmpExe `
-                -ArgumentList '/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /CURRENTUSER /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"' `
-                -Wait -PassThru -NoNewWindow -ErrorAction Stop
+                -ArgumentList $gitArgs `
+                -Wait -PassThru -ErrorAction Stop
             if ($proc.ExitCode -eq 0) {
                 Write-Ok "Git installed."
             } else {
