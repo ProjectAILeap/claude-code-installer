@@ -68,6 +68,7 @@ function Select-Mirror {
 
     # Use HttpClient async tasks (in-process, no Start-Job overhead).
     # ResponseHeadersRead = stop as soon as headers arrive, don't download body.
+    Add-Type -AssemblyName System.Net.Http   # required on PS 5.1 / .NET Framework
     $handler = [System.Net.Http.HttpClientHandler]::new()
     $handler.AllowAutoRedirect = $true
     $client  = [System.Net.Http.HttpClient]::new($handler)
