@@ -649,9 +649,10 @@ function Install-Winget {
 
 # -- Optional: winget install path ---------------------------------------------
 function Install-ViaWinget {
+    param([string]$WingetExe = "winget")
     Write-Step "Installing Claude Code via winget..."
     try {
-        $proc = Start-Process winget `
+        $proc = Start-Process $WingetExe `
             -ArgumentList "install -e --id Anthropic.ClaudeCode --source winget --accept-source-agreements --accept-package-agreements --silent" `
             -Wait -PassThru -ErrorAction Stop
         if ($proc.ExitCode -eq 0) {
@@ -703,7 +704,7 @@ function Main {
             $wingetExe = Get-WingetExe
         }
         if ($wingetExe) {
-            Install-ViaWinget
+            Install-ViaWinget -WingetExe $wingetExe
         } else {
             Write-Warn "winget is not available on this system, falling back to Native Install."
         }
