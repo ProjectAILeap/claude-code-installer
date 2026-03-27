@@ -29,6 +29,7 @@ VERSION_FILE="${DATA_DIR}/version"
 CLAUDE_JSON="${HOME}/.claude.json"
 CC_SWITCH_INSTALLED=false
 INSTALL_DIR=""      # set by detect_install_dir, used only in fallback
+CLAUDE_BIN=""       # full path to installed claude binary (may not be in PATH)
 MIRROR_ORDER=()  # all reachable sources sorted by latency (GCS + GitHub)
 GITHUB_MIRROR="" # fastest GitHub mirror (CC Switch only)
 
@@ -222,24 +223,29 @@ get_latest_version() {
 # ── Version check ─────────────────────────────────────────────────────────
 check_installed_version() {
     INSTALLED_VERSION=""
+    CLAUDE_BIN=""
 
+    local out=""
     if command -v claude &>/dev/null; then
-        local out
         out="$(claude --version 2>&1 || true)"
         if [[ "$out" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
             INSTALLED_VERSION="${BASH_REMATCH[1]}"
         fi
     fi
 
-    if [[ "$INSTALLED_VERSION" == "$VERSION" ]]; then
-        ok "Claude Code v${VERSION} is already up to date."
-        exit 0
-    fi
-
-    if [[ -n "$INSTALLED_VERSION" ]]; then
-        info "Upgrading: v${INSTALLED_VERSION} → v${VERSION}"
-    else
-        info "Installing Claude Code v${VERSION}"
+    # If not found in PATH, check known install locations (e.g. PATH not yet updated)
+    if [[ -z "$INSTALLED_VERSION" ]]; then
+        local p
+        for p in "${HOME}/.local/bin/claude" "/usr/local/bin/claude"; do
+            if [[ -x "$p" ]]; then
+                out="$("$p" --version 2>&1 || true)"
+                if [[ "$out" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+                    INSTALLED_VERSION="${BASH_REMATCH[1]}"
+                    CLAUDE_BIN="$p"
+                fi
+                break
+            fi
+        done
     fi
 }
 
@@ -315,45 +321,65 @@ _verify_from_manifest() {
     fi
 }
 
-# ── Download & verify ─────────────────────────────────────────────────────
-download_and_verify() {
-    step "Downloading claude-${VERSION}-${PLATFORM}..."
-    mkdir -p "${DOWNLOAD_DIR}"
+# ── Cached checksum check (returns 0=ok, 1=fail; never dies) ──────────────
+_cached_checksum_ok() {
+    local bin_file="$1" manifest_url="$2"
+    local manifest checksum actual
 
-    TMP_DIR="$(mktemp -d)"
-    trap 'rm -rf "${TMP_DIR}"' EXIT
+    manifest="$(curl -fsSL --connect-timeout 15 --max-time 30 "$manifest_url" 2>/dev/null || true)"
+    [[ -n "$manifest" ]] || return 1
 
-    local bin_file="${TMP_DIR}/claude-${VERSION}-${PLATFORM}"
-    local mirror
-    for mirror in "${MIRROR_ORDER[@]}"; do
-        if [[ "$mirror" == "$GCS_BUCKET" ]]; then
-            _download_from_gcs "$bin_file" && break
-        else
-            _download_from_github "$bin_file" "$mirror" && break
-        fi
-        warn "  Failed, trying next source..."
-    done
+    if [[ "$manifest" =~ \"${PLATFORM}\"[^}]*\"checksum\"[[:space:]]*:[[:space:]]*\"([a-f0-9]{64})\" ]]; then
+        checksum="${BASH_REMATCH[1]}"
+    fi
+    [[ -n "$checksum" ]] || return 1
 
-    [[ -f "$bin_file" ]] || die "Download failed from all sources. Check your network connection."
-
-    BINARY_FILE="$bin_file"
-    chmod +x "${BINARY_FILE}"
-}
-
-_download_from_gcs() {
-    local bin_file="$1"
-    local dl_url="${GCS_BUCKET}/${VERSION}/${PLATFORM}/claude"
-    local manifest_url="${GCS_BUCKET}/${VERSION}/manifest.json"
-
-    info "Source: GCS (official Anthropic)"
-    info "URL: ${dl_url}"
-
-    if ! curl -fL --connect-timeout 30 --max-time 300 \
-         --progress-bar -o "${bin_file}" "${dl_url}" 2>/dev/null; then
+    if command -v sha256sum &>/dev/null; then
+        actual="$(sha256sum "$bin_file" | awk '{print $1}')"
+    elif command -v shasum &>/dev/null; then
+        actual="$(shasum -a 256 "$bin_file" | awk '{print $1}')"
+    else
         return 1
     fi
 
-    _verify_from_manifest "$bin_file" "$manifest_url"
+    [[ "$actual" == "$checksum" ]]
+}
+
+# ── Download & verify ─────────────────────────────────────────────────────
+download_and_verify() {
+    mkdir -p "${DOWNLOAD_DIR}"
+    TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "${TMP_DIR}"' EXIT
+
+    local cache_file="${DOWNLOAD_DIR}/claude-${VERSION}-${PLATFORM}"
+
+    # Check persistent cache first
+    if [[ -f "$cache_file" ]]; then
+        step "Found cached claude-${VERSION}-${PLATFORM}, verifying..."
+        local first_mirror="${MIRROR_ORDER[0]:-https://ghfast.top/https://github.com}"
+        local manifest_url="${first_mirror}/${RELEASES_REPO}/releases/download/v${VERSION}/manifest-${VERSION}.json"
+        if _cached_checksum_ok "$cache_file" "$manifest_url"; then
+            ok "Using cached binary (checksum OK)."
+            BINARY_FILE="$cache_file"
+            chmod +x "${BINARY_FILE}"
+            return
+        else
+            warn "Cached file checksum mismatch, re-downloading..."
+            rm -f "$cache_file"
+        fi
+    fi
+
+    step "Downloading claude-${VERSION}-${PLATFORM}..."
+    local mirror
+    for mirror in "${MIRROR_ORDER[@]}"; do
+        _download_from_github "$cache_file" "$mirror" && break
+        warn "  Failed, trying next source..."
+    done
+
+    [[ -f "$cache_file" ]] || die "Download failed from all sources. Check your network connection."
+
+    BINARY_FILE="$cache_file"
+    chmod +x "${BINARY_FILE}"
 }
 
 _download_from_github() {
@@ -726,6 +752,24 @@ main() {
     detect_platform
     get_latest_version
     check_installed_version
+
+    if [[ "$INSTALLED_VERSION" == "$VERSION" ]]; then
+        ok "Claude Code v${VERSION} is already up to date."
+        # Binary found via known path but not in PATH — fix it now
+        if [[ -n "$CLAUDE_BIN" ]] && ! command -v claude &>/dev/null; then
+            INSTALL_DIR="$(dirname "$CLAUDE_BIN")"
+            setup_path
+        fi
+        print_done
+        exit 0
+    fi
+
+    if [[ -n "$INSTALLED_VERSION" ]]; then
+        info "Upgrading: v${INSTALLED_VERSION} → v${VERSION}"
+    else
+        info "Installing Claude Code v${VERSION}"
+    fi
+
     check_git
     select_mirror
     download_and_verify
