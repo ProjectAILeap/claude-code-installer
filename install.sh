@@ -450,10 +450,11 @@ setup_path() {
 # ── Write ~/.claude.json ──────────────────────────────────────────────────
 write_claude_json() {
     if [[ -f "$CLAUDE_JSON" ]]; then
-        # Use perl (available on macOS by default, no CLT dialog) to update JSON in-place.
-        # python3 is intentionally avoided: on macOS the /usr/bin/python3 stub triggers
-        # "install Command Line Developer Tools" dialog.
-        if perl -MJSON::PP -e '
+        local updated=false
+        if [[ "$(uname)" == "Darwin" ]]; then
+            # macOS: /usr/bin/python3 is a CLT stub that triggers an install dialog.
+            # Use perl -MJSON::PP instead (included in macOS system Perl ≥ 5.14).
+            perl -MJSON::PP -e '
 my $f = $ENV{HOME}."/.claude.json";
 open my $in, "<", $f or die;
 my $d = JSON::PP->new->decode(do { local $/; <$in> });
@@ -461,15 +462,22 @@ close $in;
 $d->{hasCompletedOnboarding} = JSON::PP::true;
 open my $out, ">", $f or die;
 print $out JSON::PP->new->pretty->encode($d);
-' 2>/dev/null; then
+' 2>/dev/null && updated=true
+        elif command -v python3 &>/dev/null; then
+            # Linux: python3 is safe to call (no CLT stub issue).
+            python3 - <<'PYEOF' 2>/dev/null && updated=true
+import json, os
+p = os.path.expanduser("~/.claude.json")
+with open(p) as f:
+    d = json.load(f)
+d["hasCompletedOnboarding"] = True
+with open(p, "w") as f:
+    json.dump(d, f, indent=2)
+PYEOF
+        fi
+        if [[ "$updated" == "true" ]]; then
             ok "~/.claude.json: onboarding skip set."
             return
-        fi
-        # Fallback: sed-based simple replacement (no JSON parser needed for this key)
-        if grep -q '"hasCompletedOnboarding"' "$CLAUDE_JSON" 2>/dev/null; then
-            sed -i.bak 's/"hasCompletedOnboarding"\s*:\s*false/"hasCompletedOnboarding": true/g' "$CLAUDE_JSON" \
-                && rm -f "${CLAUDE_JSON}.bak" \
-                && ok "~/.claude.json: onboarding skip set." && return
         fi
         warn "Could not update ~/.claude.json — set hasCompletedOnboarding manually if needed."
     else
