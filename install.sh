@@ -47,10 +47,17 @@ err()   { printf "${RED}[ERR ]${NC}  %s\n" "$*" >&2; }
 step()  { printf "\n${BOLD}${CYAN}▶ %s${NC}\n" "$*"; }
 die()   { err "$*"; exit 1; }
 
-# ── Millisecond timer (cross-platform: python3 or date fallback) ──────────
+# ── Millisecond timer (cross-platform) ────────────────────────────────────
+# Avoids python3 -- on macOS the /usr/bin/python3 stub triggers a
+# "install Command Line Developer Tools" dialog when executed.
 _now_ms() {
-    python3 -c "import time; print(int(time.time()*1000))" 2>/dev/null \
-        || echo $(($(date +%s) * 1000))
+    # GNU date (Linux)
+    date +%s%3N 2>/dev/null | grep -qE '^[0-9]{13}$' \
+        && date +%s%3N && return
+    # perl (macOS default, no CLT dialog)
+    perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000' 2>/dev/null && return
+    # Fallback: second precision
+    echo $(($(date +%s) * 1000))
 }
 
 # ── Detect platform ───────────────────────────────────────────────────────
@@ -442,17 +449,26 @@ setup_path() {
 # ── Write ~/.claude.json ──────────────────────────────────────────────────
 write_claude_json() {
     if [[ -f "$CLAUDE_JSON" ]]; then
-        if command -v python3 &>/dev/null; then
-            # shellcheck disable=SC2088 # tilde is in Python string, not bash
-        python3 - <<'PYEOF' 2>/dev/null && ok "~/.claude.json: onboarding skip set." && return
-import json, os
-p = os.path.expanduser("~/.claude.json")
-with open(p) as f:
-    d = json.load(f)
-d["hasCompletedOnboarding"] = True
-with open(p, "w") as f:
-    json.dump(d, f, indent=2)
-PYEOF
+        # Use perl (available on macOS by default, no CLT dialog) to update JSON in-place.
+        # python3 is intentionally avoided: on macOS the /usr/bin/python3 stub triggers
+        # "install Command Line Developer Tools" dialog.
+        if perl -MJSON::PP -e '
+my $f = $ENV{HOME}."/.claude.json";
+open my $in, "<", $f or die;
+my $d = JSON::PP->new->decode(do { local $/; <$in> });
+close $in;
+$d->{hasCompletedOnboarding} = JSON::PP::true;
+open my $out, ">", $f or die;
+print $out JSON::PP->new->pretty->encode($d);
+' 2>/dev/null; then
+            ok "~/.claude.json: onboarding skip set."
+            return
+        fi
+        # Fallback: sed-based simple replacement (no JSON parser needed for this key)
+        if grep -q '"hasCompletedOnboarding"' "$CLAUDE_JSON" 2>/dev/null; then
+            sed -i.bak 's/"hasCompletedOnboarding"\s*:\s*false/"hasCompletedOnboarding": true/g' "$CLAUDE_JSON" \
+                && rm -f "${CLAUDE_JSON}.bak" \
+                && ok "~/.claude.json: onboarding skip set." && return
         fi
         warn "Could not update ~/.claude.json — set hasCompletedOnboarding manually if needed."
     else
