@@ -679,4 +679,4 @@ main() {
 }
 
 # Allow sourcing for testing without executing main
-[[ "${BASH_SOURCE[0]}" != "${0}" ]] || main "$@"
+[[ "${BASH_SOURCE[0]:-$0}" != "${0}" ]] || main "$@"
