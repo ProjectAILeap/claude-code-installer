@@ -654,14 +654,21 @@ function Install-Winget {
         Add-AppxPackage -Path $appins
         Start-Sleep -Seconds 3
         Write-Ok "winget installed."
-        # Add winget's directory to current session PATH so it's usable immediately
+        # Add winget's directory to both current session PATH and permanent User PATH
         $wingetExeNow = Get-WingetExe
         if ($wingetExeNow) {
             $wingetDir = Split-Path $wingetExeNow
+            # Permanent User PATH (applies to all new terminals)
+            $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+            if ($null -eq $userPath) { $userPath = "" }
+            if ($userPath -notlike "*$wingetDir*") {
+                [Environment]::SetEnvironmentVariable("Path", "$userPath;$wingetDir", "User")
+            }
+            # Current session PATH (applies immediately)
             if ($env:Path -notlike "*$wingetDir*") {
                 $env:Path = "$env:Path;$wingetDir"
-                Write-Info "winget added to current session PATH: $wingetDir"
             }
+            Write-Info "winget available: $wingetExeNow"
         }
     } catch {
         Write-Warn "Failed to install winget: $($_.Exception.Message)"
