@@ -786,7 +786,9 @@ function Main {
 
             $dlOk = $false
             if ($global:IsGCS) {
-                $dlOk = Invoke-Download -Url $dlUrl -OutFile $binaryPath -Label "Claude Code binary (GCS)"
+                # GCS may be throttled/blocked in China for large files even if headers are fast.
+                # Use a short timeout (30s) and single attempt so fallback to GitHub is quick.
+                $dlOk = Invoke-Download -Url $dlUrl -OutFile $binaryPath -Label "Claude Code binary (GCS)" -TimeoutSec 30 -RetryCount 1
                 if (-not $dlOk) {
                     Write-Warn "GCS download failed, falling back to GitHub mirror..."
                     $global:IsGCS = $false
