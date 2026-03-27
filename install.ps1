@@ -56,14 +56,15 @@ function Exit-WithError {
 
 # -- Mirror selection ----------------------------------------------------------
 $global:SelectedMirror     = ""
-$global:GithubMirror       = ""   # fastest non-GCS mirror (used for CC Switch / Git)
-$global:IsGCS              = $false
+$global:GithubMirror       = ""   # fastest mirror (used for CC Switch / Git)
 $global:InstalledViaWinget = $false
 
 function Select-Mirror {
     param([string]$Version)
 
-    Write-Step "Testing mirror speeds (GCS + GitHub mirrors)..."
+    # GCS (storage.googleapis.com) is excluded: responds fast to probes but
+    # binary downloads time out for China users (blocked by GFW).
+    Write-Step "Testing mirror speeds (GitHub mirrors)..."
 
     # Use HttpClient async tasks (in-process, no Start-Job overhead).
     # ResponseHeadersRead = stop as soon as headers arrive, don't download body.
@@ -73,16 +74,12 @@ function Select-Mirror {
     $client  = [System.Net.Http.HttpClient]::new($handler)
     $client.Timeout = [System.TimeSpan]::FromSeconds(20)
 
-    $allSources = @($GCS_BUCKET) + $MIRRORS
+    $allSources = $MIRRORS
     $tasks = [ordered]@{}
     $sw    = [ordered]@{}
 
     foreach ($m in $allSources) {
-        $url = if ($m -eq $GCS_BUCKET) {
-            "$GCS_BUCKET/$Version/manifest.json"
-        } else {
-            "$m/$RELEASES_REPO/releases/download/v$Version/sha256sums.txt"
-        }
+        $url = "$m/$RELEASES_REPO/releases/download/v$Version/sha256sums.txt"
         $cts = [System.Threading.CancellationTokenSource]::new(15000)  # 15s per mirror
         $sw[$m]    = [System.Diagnostics.Stopwatch]::StartNew()
         $tasks[$m] = $client.GetAsync($url,
@@ -115,9 +112,7 @@ function Select-Mirror {
     $reachable = @($allResults | Where-Object { $_.Ok })
 
     foreach ($r in $allResults) {
-        $t = if ($r.Mirror -eq $GCS_BUCKET) { "GCS (official)" } else {
-            $r.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
-        }
+        $t = $r.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
         if ($r.Ok) {
             Write-Info ("  {0,-30} {1,6} ms" -f $t, $r.Ms)
         } else {
@@ -129,19 +124,12 @@ function Select-Mirror {
     if ($reachable.Count -gt 0) {
         $best = $reachable[0]
         $global:SelectedMirror = $best.Mirror
-        $global:IsGCS = ($best.Mirror -eq $GCS_BUCKET)
-        $tag = if ($global:IsGCS) { "GCS (official)" } else {
-            $best.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
-        }
+        $global:GithubMirror   = $best.Mirror
+        $tag = $best.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
         Write-Ok "Selected: $tag ($($best.Ms) ms)"
-
-        # Track fastest non-GCS mirror for CC Switch / Git downloads
-        $firstGithub = $reachable | Where-Object { $_.Mirror -ne $GCS_BUCKET } | Select-Object -First 1
-        $global:GithubMirror = if ($firstGithub) { $firstGithub.Mirror } else { "https://ghfast.top/https://github.com" }
     } else {
         $global:SelectedMirror = "https://ghfast.top/https://github.com"
         $global:GithubMirror   = "https://ghfast.top/https://github.com"
-        $global:IsGCS = $false
         Write-Warn "All mirror checks timed out. Defaulting to ghfast.top."
     }
 }
@@ -779,7 +767,7 @@ function Main {
     }
 
     if (-not $global:InstalledViaWinget) {
-        # 5. Select fastest mirror (GCS + GitHub mirrors)
+        # 5. Select fastest GitHub mirror
         if (-not $skipInstall) { Select-Mirror -Version $targetVersion }
     }
 
@@ -794,32 +782,18 @@ function Main {
         $binaryPath  = "$DOWNLOAD_DIR\$fileName"
         $manifestFile = "$DOWNLOAD_DIR\manifest-$targetVersion.json"
 
-        # Build download URLs based on selected source
-        if ($global:IsGCS) {
-            $dlUrl      = "$GCS_BUCKET/$targetVersion/$platform/claude.exe"
-            $manifestUrl = "$GCS_BUCKET/$targetVersion/manifest.json"
-        } else {
-            $dlUrl      = "$global:SelectedMirror/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
-            $manifestUrl = "$global:SelectedMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest-$targetVersion.json"
-        }
+        # Build download URLs from selected GitHub mirror
+        $dlUrl      = "$global:SelectedMirror/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
+        $manifestUrl = "$global:SelectedMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest-$targetVersion.json"
 
         # 8. Download manifest.json (for cache verification)
         $manifestOk = $false
         if (Test-Path $manifestFile) {
             $manifestOk = $true
         } else {
-            if ($global:IsGCS) {
-                $manifestOk = Invoke-Download -Url $manifestUrl -OutFile $manifestFile -Label "manifest.json" -RetryCount 2
-                if (-not $manifestOk) {
-                    Write-Warn "GCS manifest unavailable, trying GitHub mirror..."
-                    $fbManifestUrl = "$global:GithubMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest-$targetVersion.json"
-                    $manifestOk = Invoke-Download -Url $fbManifestUrl -OutFile $manifestFile -Label "manifest.json (fallback)" -RetryCount 2
-                }
-            } else {
-                $manifestOk = Invoke-DownloadMirror `
-                    -Path "/$RELEASES_REPO/releases/download/v$targetVersion/manifest-$targetVersion.json" `
-                    -OutFile $manifestFile -Label "manifest.json"
-            }
+            $manifestOk = Invoke-DownloadMirror `
+                -Path "/$RELEASES_REPO/releases/download/v$targetVersion/manifest-$targetVersion.json" `
+                -OutFile $manifestFile -Label "manifest.json"
         }
 
         # 9. Download binary (with cache)
@@ -843,30 +817,9 @@ function Main {
             Write-Step "Downloading $fileName..."
             Write-Info "Large binary (~230 MB), no progress bar -- please wait..."
 
-            $dlOk = $false
-            if ($global:IsGCS) {
-                # GCS may be throttled/blocked in China for large files even if headers are fast.
-                # Use a short timeout (30s) and single attempt so fallback to GitHub is quick.
-                $dlOk = Invoke-Download -Url $dlUrl -OutFile $binaryPath -Label "Claude Code binary (GCS)" -TimeoutSec 30 -RetryCount 1
-                if (-not $dlOk) {
-                    Write-Warn "GCS download failed, falling back to GitHub mirror..."
-                    $global:IsGCS = $false
-                    $dlUrl = "$global:GithubMirror/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
-                    # Also re-fetch manifest from GitHub if it came from GCS
-                    if ($manifestOk) {
-                        $fbManifestUrl = "$global:GithubMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest-$targetVersion.json"
-                        Remove-Item $manifestFile -Force -ErrorAction SilentlyContinue
-                        $manifestOk = Invoke-Download -Url $fbManifestUrl -OutFile $manifestFile -Label "manifest.json (GitHub)" -RetryCount 2
-                    }
-                    $dlOk = Invoke-DownloadMirror `
-                        -Path "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName" `
-                        -OutFile $binaryPath -Label "Claude Code binary"
-                }
-            } else {
-                $dlOk = Invoke-DownloadMirror `
-                    -Path "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName" `
-                    -OutFile $binaryPath -Label "Claude Code binary"
-            }
+            $dlOk = Invoke-DownloadMirror `
+                -Path "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName" `
+                -OutFile $binaryPath -Label "Claude Code binary"
 
             if (-not $dlOk) {
                 Exit-WithError "Download failed. Try a different mirror or check your connection."
