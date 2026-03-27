@@ -130,10 +130,25 @@ function Uninstall-CcSwitch {
     }
 }
 
+function Get-WingetExe {
+    $cmd = Get-Command winget -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $localLink = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\winget.exe"
+    if (Test-Path $localLink) { return $localLink }
+    $pkg = Get-AppxPackage -Name Microsoft.DesktopAppInstaller -ErrorAction SilentlyContinue |
+        Sort-Object Version -Descending | Select-Object -First 1
+    if ($pkg) {
+        $exe = Join-Path $pkg.InstallLocation "winget.exe"
+        if (Test-Path $exe) { return $exe }
+    }
+    return $null
+}
+
 function Uninstall-ViaWinget {
+    param([string]$WingetExe)
     Write-Info "Uninstalling Claude Code via winget..."
     try {
-        $proc = Start-Process winget `
+        $proc = Start-Process $WingetExe `
             -ArgumentList "uninstall --id Anthropic.ClaudeCode --silent --exact" `
             -Wait -PassThru -ErrorAction Stop
         if ($proc.ExitCode -eq 0) {
@@ -153,9 +168,9 @@ function Main {
 
     # Detect winget-managed installation
     $isWinget = $false
-    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
-    if ($wingetCmd) {
-        $wingetList = & winget list --id Anthropic.ClaudeCode --exact 2>$null
+    $wingetExe = Get-WingetExe
+    if ($wingetExe) {
+        $wingetList = & $wingetExe list --id Anthropic.ClaudeCode --exact 2>$null
         $isWinget = ($wingetList -match "Anthropic\.ClaudeCode")
     }
 
@@ -207,7 +222,7 @@ function Main {
         }
 
         Write-Step "Removing..."
-        if ($removeWinget)       { Uninstall-ViaWinget }
+        if ($removeWinget)       { Uninstall-ViaWinget -WingetExe $wingetExe }
         if ($removeConfig) {
             if (Test-Path $CLAUDE_CONFIG_DIR)  { Remove-Item $CLAUDE_CONFIG_DIR  -Recurse -Force; Write-Ok "Removed: $CLAUDE_CONFIG_DIR" }
             if (Test-Path $CLAUDE_CONFIG_FILE) { Remove-Item $CLAUDE_CONFIG_FILE -Force;          Write-Ok "Removed: $CLAUDE_CONFIG_FILE" }
