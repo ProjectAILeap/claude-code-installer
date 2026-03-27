@@ -458,6 +458,23 @@ setup_path() {
         fi
     done
 
+    # Fallback: if no rc file exists yet, create the appropriate one.
+    # macOS (zsh default) may not have ~/.zshrc; Linux typically has ~/.bashrc.
+    if ! $added; then
+        local fallback_rc
+        if [[ "$(uname)" == "Darwin" ]]; then
+            fallback_rc="${HOME}/.zshrc"
+        else
+            fallback_rc="${HOME}/.bashrc"
+        fi
+        {
+            printf '\n# Added by claude-code-installer\n'
+            printf '%s\n' "$export_line"
+        } >> "$fallback_rc"
+        info "  Created: $fallback_rc"
+        added=true
+    fi
+
     $added || warn "Add manually: ${export_line}"
 }
 
@@ -636,7 +653,9 @@ install_cc_switch_linux() {
 
 # ── CC Switch prompt ──────────────────────────────────────────────────────
 install_cc_switch_prompt() {
-    [ -t 0 ] || return   # Skip in non-interactive (piped) mode
+    # /dev/tty check: individual reads already use /dev/tty explicitly,
+    # so this function works even when stdin is a pipe (curl | bash).
+    [ -e /dev/tty ] || return
 
     printf "\n${BOLD}Install CC Switch (API Provider switcher)?${NC} [y/N] "
     read -r reply </dev/tty || { CC_SWITCH_INSTALLED=false; return; }
