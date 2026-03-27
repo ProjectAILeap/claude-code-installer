@@ -372,6 +372,7 @@ function Ensure-Git {
             $wingetExe = Get-WingetExe
         }
         if ($wingetExe) {
+            Ensure-WingetAlias -WingetExe $wingetExe
             Write-Info "  Installing Git via winget (no UAC required, timeout 60s)..."
             try {
                 $proc = Start-Process -FilePath $wingetExe `
@@ -641,6 +642,25 @@ function Get-WingetExe {
     return $null
 }
 
+function Ensure-WingetAlias {
+    param([string]$WingetExe)
+    # Already accessible by name -- nothing to do
+    if (Get-Command winget -ErrorAction SilentlyContinue) { return }
+    # Set alias for current session
+    Set-Alias -Name winget -Value $WingetExe -Scope Global
+    # Persist to $PROFILE so future terminals also have it
+    $aliasLine = "Set-Alias winget `"$WingetExe`"  # added by claude-code-installer"
+    $profilePath = $PROFILE
+    if (-not (Test-Path $profilePath)) {
+        New-Item -ItemType File -Path $profilePath -Force | Out-Null
+    }
+    $existing = Get-Content $profilePath -Raw -ErrorAction SilentlyContinue
+    if ($existing -notlike "*Set-Alias winget*") {
+        Add-Content $profilePath "`n$aliasLine"
+        Write-Info "winget alias written to `$PROFILE (future terminals will have 'winget' command)."
+    }
+}
+
 function Install-Winget {
     Write-Step "Installing winget (Windows Package Manager)..."
     try {
@@ -676,6 +696,7 @@ function Install-Winget {
                 $env:Path = "$env:Path;$wingetDir"
             }
             Write-Info "winget available: $wingetExeNow"
+            Ensure-WingetAlias -WingetExe $wingetExeNow
         }
     } catch {
         Write-Warn "Failed to install winget: $($_.Exception.Message)"
@@ -758,6 +779,7 @@ function Main {
             $wingetExe = Get-WingetExe
         }
         if ($wingetExe) {
+            Ensure-WingetAlias -WingetExe $wingetExe
             Install-ViaWinget -WingetExe $wingetExe
         } else {
             Write-Warn "winget is not available on this system, falling back to Native Install."
