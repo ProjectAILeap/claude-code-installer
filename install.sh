@@ -386,12 +386,28 @@ run_claude_install() {
     [[ -n "$TARGET" ]] && install_cmd+=("$TARGET")
 
     if command -v timeout &>/dev/null; then
+        # Linux: GNU coreutils timeout
         if timeout 90 "${install_cmd[@]}"; then
             install_ok=true
         fi
-    else
-        if "${install_cmd[@]}"; then
+    elif command -v gtimeout &>/dev/null; then
+        # macOS with coreutils installed via Homebrew
+        if gtimeout 90 "${install_cmd[@]}"; then
             install_ok=true
+        fi
+    else
+        # macOS without coreutils: run in background and kill after 90s
+        "${install_cmd[@]}" &
+        local pid=$!
+        local i=0
+        while kill -0 "$pid" 2>/dev/null && (( i < 90 )); do
+            sleep 1; (( i++ ))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null || true
+        else
+            wait "$pid" 2>/dev/null && install_ok=true || true
         fi
     fi
 
