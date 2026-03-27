@@ -771,49 +771,51 @@ function Main {
     $platform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "win32-arm64" } else { "win32-x64" }
 
     # 3. Version check (shared by both install methods)
-    $targetVersion   = Get-LatestVersion
+    $targetVersion    = Get-LatestVersion
     $installedVersion = Get-InstalledVersion
+    $skipInstall      = $false
     if ($installedVersion -eq $targetVersion) {
         Write-Ok "Claude Code v$targetVersion is already up to date."
-        exit 0
-    }
-    if ($installedVersion) {
+        $skipInstall = $true
+    } elseif ($installedVersion) {
         Write-Info "Upgrading: v$installedVersion -> v$targetVersion"
     } else {
         Write-Info "Installing Claude Code v$targetVersion"
     }
 
-    # 4. Choose installation method (mirrors official claude.ai/install.ps1 prompt)
-    Write-Host ""
-    Write-Host "Select installation method:" -ForegroundColor Cyan
-    Write-Host "  [1] Native Install (Recommended) -- downloads official binary, sets up auto-update"
-    Write-Host "  [2] winget                        -- uses Windows Package Manager"
-    Write-Host ""
-    $methodChoice = Read-Host "Enter choice [1]"
-    if ($methodChoice -eq "2") {
-        $wingetExe = Get-WingetExe
-        if (-not $wingetExe) {
-            Write-Info "winget not found, installing it automatically..."
-            Install-Winget
+    if (-not $skipInstall) {
+        # 4. Choose installation method (mirrors official claude.ai/install.ps1 prompt)
+        Write-Host ""
+        Write-Host "Select installation method:" -ForegroundColor Cyan
+        Write-Host "  [1] Native Install (Recommended) -- downloads official binary, sets up auto-update"
+        Write-Host "  [2] winget                        -- uses Windows Package Manager"
+        Write-Host ""
+        $methodChoice = Read-Host "Enter choice [1]"
+        if ($methodChoice -eq "2") {
             $wingetExe = Get-WingetExe
-        }
-        if ($wingetExe) {
-            Ensure-WingetAlias -WingetExe $wingetExe
-            Install-ViaWinget -WingetExe $wingetExe
-        } else {
-            Write-Warn "winget is not available on this system, falling back to Native Install."
+            if (-not $wingetExe) {
+                Write-Info "winget not found, installing it automatically..."
+                Install-Winget
+                $wingetExe = Get-WingetExe
+            }
+            if ($wingetExe) {
+                Ensure-WingetAlias -WingetExe $wingetExe
+                Install-ViaWinget -WingetExe $wingetExe
+            } else {
+                Write-Warn "winget is not available on this system, falling back to Native Install."
+            }
         }
     }
 
     if (-not $global:InstalledViaWinget) {
         # 5. Select fastest mirror (GCS + GitHub mirrors)
-        Select-Mirror -Version $targetVersion
+        if (-not $skipInstall) { Select-Mirror -Version $targetVersion }
     }
 
     # 6. Ensure Git
     Ensure-Git
 
-    if (-not $global:InstalledViaWinget) {
+    if (-not $global:InstalledViaWinget -and -not $skipInstall) {
         # 7. Prepare download dir (aligns with official: ~/.claude/downloads)
         New-Item -ItemType Directory -Force -Path $DOWNLOAD_DIR | Out-Null
 
