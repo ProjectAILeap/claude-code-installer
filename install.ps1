@@ -737,6 +737,23 @@ function Main {
     if ($installedVersion -eq $targetVersion) {
         Write-Ok "Claude Code v$targetVersion is already up to date."
         $skipInstall = $true
+        # If claude is not in PATH but exists at LOCAL_BIN, fix PATH now
+        $LOCAL_BIN = "$env:USERPROFILE\.local\bin"
+        if (-not (Get-Command claude -ErrorAction SilentlyContinue) -and (Test-Path "$LOCAL_BIN\claude.exe")) {
+            $currentUp = [Environment]::GetEnvironmentVariable("Path", "User")
+            if ($null -eq $currentUp) { $currentUp = "" }
+            if (-not $currentUp.Contains($LOCAL_BIN)) {
+                [Environment]::SetEnvironmentVariable("Path", "$currentUp;$LOCAL_BIN", "User")
+                Write-Ok "Added to PATH: $LOCAL_BIN"
+            }
+            $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
+            $isChildProcess = [Environment]::GetCommandLineArgs() | Where-Object { $_ -match '(?i)^-File$' }
+            if ($isChildProcess) {
+                Write-Warn "Please open a NEW terminal to use claude."
+            } else {
+                Write-Ok "claude is now available in this session."
+            }
+        }
     } elseif ($installedVersion) {
         Write-Info "Upgrading: v$installedVersion -> v$targetVersion"
     } else {
