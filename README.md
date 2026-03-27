@@ -238,9 +238,6 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1
 **Q: 需要管理员权限吗？**
 > 不需要。Windows 的 Git 和 Claude Code 均安装到用户目录，macOS/Linux 默认安装到 `~/.local/bin`，均无需 root/管理员权限。
 
-**Q: macOS 上为什么写了 PATH 还是找不到 `claude`？**
-> macOS 终端通常启动登录 shell，`zsh` 更常读取 `~/.zprofile`，`bash` 更常读取 `~/.bash_profile`。安装脚本会优先写这些文件；安装后请重新打开终端，或执行 `source ~/.zprofile` / `source ~/.bash_profile`。
-
 **Q: fallback 安装和 `claude install` 有什么区别？**
 > `claude install` 成功时通常保留官方 shell integration 和自动更新能力；fallback 是直接复制二进制，优点是稳定、快，缺点是没有自动更新，需要重新运行安装脚本升级。
 
