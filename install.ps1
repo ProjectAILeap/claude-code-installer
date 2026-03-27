@@ -13,7 +13,8 @@
 #>
 
 # Default parameters (iex context does not support param() blocks)
-if (-not (Get-Variable 'NoVerify' -ErrorAction SilentlyContinue)) { $NoVerify = $false }
+if (-not (Get-Variable 'NoVerify'   -ErrorAction SilentlyContinue)) { $NoVerify   = $false }
+if (-not (Get-Variable 'UseWinget'  -ErrorAction SilentlyContinue)) { $UseWinget  = $false }
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference    = "Stop"
@@ -60,41 +61,41 @@ $global:GithubMirror       = ""   # fastest non-GCS mirror (used for CC Switch /
 $global:IsGCS              = $false
 $global:InstalledViaWinget = $false
 
-function Get-MirrorTestUrl {
-    param([string]$Mirror)
-    if ($Mirror -eq $GCS_BUCKET) {
-        return "$GCS_BUCKET/latest"
-    }
-    if ($Mirror -match '/https://github\.com$') {
-        return ($Mirror -replace '/https://github\.com$', '/https://raw.githubusercontent.com') + `
-               "/ProjectAILeap/claude-code-installer/main/README.md"
-    }
-    return "$Mirror/$RELEASES_REPO/releases"
-}
-
 function Select-Mirror {
+    param([string]$Version)
+
     Write-Step "Testing mirror speeds (GCS + GitHub mirrors)..."
 
     $allSources = @($GCS_BUCKET) + $MIRRORS
     $jobs = @()
     foreach ($m in $allSources) {
-        $url = Get-MirrorTestUrl $m
+        # Build test URL using a real, tiny release asset (~750 bytes).
+        # This tests the exact same URL pattern as actual binary downloads,
+        # so a successful test guarantees the mirror works for real downloads.
+        if ($m -eq $GCS_BUCKET) {
+            $url = "$GCS_BUCKET/$Version/manifest.json"
+        } else {
+            $url = "$m/$RELEASES_REPO/releases/download/v$Version/sha256sums.txt"
+        }
+
         $jobs += Start-Job -ScriptBlock {
             param($mirror, $u)
+            $ProgressPreference = 'SilentlyContinue'
             $sw = [System.Diagnostics.Stopwatch]::StartNew()
             try {
-                $r = Invoke-WebRequest -Uri $u -Method Head -TimeoutSec 6 -UseBasicParsing -ErrorAction Stop
+                # Use GET instead of HEAD -- proxy mirrors often reject HEAD requests
+                # but handle GET fine.  The test file is tiny (<1 KB) so this is fast.
+                Invoke-WebRequest -Uri $u -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop | Out-Null
                 $sw.Stop()
-                [PSCustomObject]@{ Mirror = $mirror; Ms = $sw.ElapsedMilliseconds; Ok = ($r.StatusCode -lt 400) }
+                [PSCustomObject]@{ Mirror = $mirror; Ms = $sw.ElapsedMilliseconds; Ok = $true }
             } catch {
                 $sw.Stop()
-                $ok = if ($_.Exception.Response) { $_.Exception.Response.StatusCode.value__ -lt 400 } else { $false }
-                [PSCustomObject]@{ Mirror = $mirror; Ms = 99999; Ok = $ok }
+                [PSCustomObject]@{ Mirror = $mirror; Ms = 99999; Ok = $false }
             }
         } -ArgumentList $m, $url
     }
 
-    $jobs | Wait-Job -Timeout 10 | Out-Null
+    $jobs | Wait-Job -Timeout 12 | Out-Null
     $allResults = @($jobs | ForEach-Object {
         if ($_.State -eq 'Completed') { Receive-Job $_ -ErrorAction SilentlyContinue }
         else { [PSCustomObject]@{ Mirror = ""; Ms = 99999; Ok = $false } }
@@ -583,6 +584,42 @@ function Install-CcSwitch {
     }
 }
 
+# -- Winget helpers ------------------------------------------------------------
+function Get-WingetExe {
+    $cmd = Get-Command winget -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $pkg = Get-AppxPackage -Name Microsoft.DesktopAppInstaller -ErrorAction SilentlyContinue |
+        Sort-Object Version -Descending | Select-Object -First 1
+    if ($pkg) {
+        $exe = Join-Path $pkg.InstallLocation "winget.exe"
+        if (Test-Path $exe) { return $exe }
+    }
+    return $null
+}
+
+function Install-Winget {
+    Write-Step "Installing winget (Windows Package Manager)..."
+    try {
+        $tmp    = [System.IO.Path]::GetTempPath()
+        $vclibs = Join-Path $tmp "Microsoft.VCLibs.x64.14.00.Desktop.appx"
+        $appins = Join-Path $tmp "Microsoft.DesktopAppInstaller.msixbundle"
+
+        Write-Info "Downloading VCLibs..."
+        Invoke-WebRequest -Uri "https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx" `
+            -OutFile $vclibs -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop
+        try { Add-AppxPackage -Path $vclibs -ErrorAction SilentlyContinue } catch {}
+
+        Write-Info "Downloading winget package (~15 MB)..."
+        Invoke-WebRequest -Uri "https://aka.ms/getwinget" `
+            -OutFile $appins -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+        Add-AppxPackage -Path $appins
+        Start-Sleep -Seconds 3
+        Write-Ok "winget installed."
+    } catch {
+        Write-Warn "Failed to install winget: $($_.Exception.Message)"
+    }
+}
+
 # -- Optional: winget install path ---------------------------------------------
 function Install-ViaWinget {
     Write-Step "Installing Claude Code via winget..."
@@ -620,14 +657,29 @@ function Main {
     # 2. Platform (aligns with official: supports win32-arm64)
     $platform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "win32-arm64" } else { "win32-x64" }
 
-    # 2.5. Optional: winget path
-    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
-    if ($wingetCmd) {
+    # 2.5. Optional: winget path (enabled via $UseWinget = $true before iex, or -UseWinget flag)
+    if ($UseWinget) {
         Write-Host ""
-        Write-Host "  winget is available on this system." -ForegroundColor Cyan
-        $useWinget = Read-Host "  Install Claude Code via winget? [y/N]"
-        if ($useWinget -match '^[Yy]') {
-            Install-ViaWinget
+        $wingetExe = Get-WingetExe
+        if (-not $wingetExe) {
+            Write-Warn "winget not found on this system."
+            $ans = Read-Host "  Install winget (Windows Package Manager) first? [y/N]"
+            if ($ans -match '^[Yy]') {
+                Install-Winget
+                $wingetExe = Get-WingetExe
+                if (-not $wingetExe) {
+                    Write-Warn "winget still not available, falling back to mirror download."
+                }
+            }
+        } else {
+            Write-Info "winget available: $wingetExe"
+        }
+
+        if ($wingetExe) {
+            $ans = Read-Host "  Install Claude Code via winget? [y/N]"
+            if ($ans -match '^[Yy]') {
+                Install-ViaWinget
+            }
         }
     }
 
@@ -648,7 +700,7 @@ function Main {
         }
 
         # 5. Select fastest mirror (GCS + GitHub mirrors)
-        Select-Mirror
+        Select-Mirror -Version $targetVersion
     }
 
     # 6. Ensure Git
@@ -668,7 +720,7 @@ function Main {
             $manifestUrl = "$GCS_BUCKET/$targetVersion/manifest.json"
         } else {
             $dlUrl      = "$global:SelectedMirror/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
-            $manifestUrl = "$global:SelectedMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest.json"
+            $manifestUrl = "$global:SelectedMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest-$targetVersion.json"
         }
 
         # 8. Download manifest.json (for cache verification)
@@ -680,12 +732,12 @@ function Main {
                 $manifestOk = Invoke-Download -Url $manifestUrl -OutFile $manifestFile -Label "manifest.json" -RetryCount 2
                 if (-not $manifestOk) {
                     Write-Warn "GCS manifest unavailable, trying GitHub mirror..."
-                    $fbManifestUrl = "$global:GithubMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest.json"
+                    $fbManifestUrl = "$global:GithubMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest-$targetVersion.json"
                     $manifestOk = Invoke-Download -Url $fbManifestUrl -OutFile $manifestFile -Label "manifest.json (fallback)" -RetryCount 2
                 }
             } else {
                 $manifestOk = Invoke-DownloadMirror `
-                    -Path "/$RELEASES_REPO/releases/download/v$targetVersion/manifest.json" `
+                    -Path "/$RELEASES_REPO/releases/download/v$targetVersion/manifest-$targetVersion.json" `
                     -OutFile $manifestFile -Label "manifest.json"
             }
         }
@@ -720,7 +772,7 @@ function Main {
                     $dlUrl = "$global:GithubMirror/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
                     # Also re-fetch manifest from GitHub if it came from GCS
                     if ($manifestOk) {
-                        $fbManifestUrl = "$global:GithubMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest.json"
+                        $fbManifestUrl = "$global:GithubMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest-$targetVersion.json"
                         Remove-Item $manifestFile -Force -ErrorAction SilentlyContinue
                         $manifestOk = Invoke-Download -Url $fbManifestUrl -OutFile $manifestFile -Label "manifest.json (GitHub)" -RetryCount 2
                     }
@@ -800,7 +852,18 @@ function Main {
         $mp = [Environment]::GetEnvironmentVariable("Path", "Machine"); if ($null -eq $mp) { $mp = "" }
         $up = [Environment]::GetEnvironmentVariable("Path", "User");    if ($null -eq $up) { $up = "" }
         $env:Path = "$mp;$up"
-        Write-Ok "claude is available in this session immediately."
+
+        # Detect if running as a child process (powershell -File ...) vs in-session (iex)
+        # When launched via -File, PATH changes cannot propagate back to the parent terminal.
+        $isChildProcess = [Environment]::GetCommandLineArgs() | Where-Object { $_ -match '(?i)^-File$' }
+        if ($isChildProcess) {
+            Write-Ok "PATH updated in system registry."
+            Write-Warn "You ran the script via 'powershell -File'. Please open a NEW terminal to use claude."
+            Write-Info "Or run this in current terminal to refresh PATH:"
+            Write-Host '  $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")' -ForegroundColor Yellow
+        } else {
+            Write-Ok "claude is available in this session immediately."
+        }
         Write-Info "New terminal windows will also have claude in PATH automatically."
     }
 
@@ -827,8 +890,8 @@ function Main {
         Write-Host "  CC Switch: open from Start Menu to configure your API Provider." -ForegroundColor Cyan
         Write-Host ""
     }
-    Write-Host "  To upgrade: re-run install.bat"
-    Write-Host "  To uninstall: run uninstall.bat"
+    Write-Host "  To upgrade:   powershell -ExecutionPolicy Bypass -File install.ps1"
+    Write-Host "  To uninstall: powershell -ExecutionPolicy Bypass -File uninstall.ps1"
     Write-Host ""
 }
 
