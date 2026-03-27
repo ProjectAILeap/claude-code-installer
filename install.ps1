@@ -514,6 +514,18 @@ function Configure-ApiKey {
     Write-ClaudeJson
 }
 
+# -- CC Switch already-installed detection -------------------------------------
+function Test-CcSwitchInstalled {
+    $paths = @(
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    $entry = Get-ItemProperty $paths -ErrorAction SilentlyContinue |
+        Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like "*CC Switch*" } |
+        Select-Object -First 1
+    return $null -ne $entry
+}
+
 # -- Optional: CC Switch -------------------------------------------------------
 function Install-CcSwitch {
     Write-Step "Installing CC Switch (optional)..."
@@ -922,10 +934,15 @@ function Main {
 
     # 12. Optional: CC Switch
     Write-Host ""
-    $installCcSwitch = Read-Host "Install CC Switch (API Provider switcher)? [y/N]"
     $ccSwitchInstalled = $false
-    if ($installCcSwitch -match '^[Yy]') {
-        $ccSwitchInstalled = Install-CcSwitch
+    if (Test-CcSwitchInstalled) {
+        Write-Ok "CC Switch is already installed."
+        $ccSwitchInstalled = $true
+    } else {
+        $installCcSwitch = Read-Host "Install CC Switch (API Provider switcher)? [y/N]"
+        if ($installCcSwitch -match '^[Yy]') {
+            $ccSwitchInstalled = Install-CcSwitch
+        }
     }
 
     # 13. API / Provider configuration

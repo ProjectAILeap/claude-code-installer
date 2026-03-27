@@ -676,6 +676,15 @@ install_cc_switch_linux() {
     fi
 }
 
+# ── CC Switch already-installed detection ─────────────────────────────────
+is_cc_switch_installed() {
+    if [[ "${PLATFORM}" == darwin-* ]]; then
+        [[ -d "/Applications/CC Switch.app" ]]
+    else
+        [[ -x "${HOME}/.local/bin/cc-switch" ]]
+    fi
+}
+
 # ── CC Switch prompt ──────────────────────────────────────────────────────
 install_cc_switch_prompt() {
     # /dev/tty check: individual reads already use /dev/tty explicitly,
@@ -760,6 +769,17 @@ main() {
             INSTALL_DIR="$(dirname "$CLAUDE_BIN")"
             setup_path
         fi
+        # Check CC Switch even when Claude is already up to date
+        if is_cc_switch_installed; then
+            ok "CC Switch is already installed."
+            CC_SWITCH_INSTALLED=true
+        else
+            select_mirror
+            TMP_DIR="$(mktemp -d)"
+            trap 'rm -rf "${TMP_DIR}"' EXIT
+            install_cc_switch_prompt
+        fi
+        configure_api_key
         print_done
         exit 0
     fi
