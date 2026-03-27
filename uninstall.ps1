@@ -70,7 +70,8 @@ function Uninstall-Git {
         $uninstExe = $GitEntry.UninstallString -replace '"', '' -replace '/[A-Z].*$', '' -replace '\s+$', ''
         if (-not (Test-Path $uninstExe)) {
             # Fallback: look for unins000.exe next to git.exe
-            $gitExe = (Get-Command git -ErrorAction SilentlyContinue)?.Source
+            $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+            $gitExe = if ($gitCmd) { $gitCmd.Source } else { $null }
             if ($gitExe) {
                 $uninstExe = Join-Path (Split-Path (Split-Path $gitExe -Parent) -Parent) "unins000.exe"
             }
