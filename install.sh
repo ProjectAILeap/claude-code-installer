@@ -4,19 +4,35 @@
 #  https://github.com/ProjectAILeap/claude-code-installer
 #
 #  Binary source: https://github.com/ProjectAILeap/claude-code-releases
+#                 https://storage.googleapis.com (official Anthropic GCS)
 #  Supports: macOS (arm64/x64)、Linux (x64/arm64/musl)
-#  Features:  Install / Upgrade / GitHub mirror acceleration
+#  Features:  Install / Upgrade / Mirror acceleration / CC Switch
+#
+#  Usage: bash install.sh [stable|latest|VERSION]
 # ════════════════════════════════════════════════════════════════════════════
+# shellcheck disable=SC2059  # color variables in printf format strings are intentional
 set -euo pipefail
+
+# ── Target parameter (passed through to claude install) ───────────────────
+TARGET="${1:-}"
+if [[ -n "$TARGET" ]] && [[ ! "$TARGET" =~ ^(stable|latest|[0-9]+\.[0-9]+\.[0-9]+(-[^[:space:]]+)?)$ ]]; then
+    echo "Usage: $0 [stable|latest|VERSION]" >&2
+    exit 1
+fi
 
 RELEASES_REPO="ProjectAILeap/claude-code-releases"
 CC_SWITCH_REPO="farion1231/cc-switch"
+GCS_BUCKET="https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
+DOWNLOAD_DIR="${HOME}/.claude/downloads"
 DATA_DIR="${HOME}/.local/share/claude-code"
 VERSION_FILE="${DATA_DIR}/version"
 CLAUDE_JSON="${HOME}/.claude.json"
 CC_SWITCH_INSTALLED=false
+INSTALL_DIR=""      # set by detect_install_dir, used only in fallback
+MIRROR_ORDER=()  # all reachable sources sorted by latency (GCS + GitHub)
+GITHUB_MIRROR="" # fastest GitHub mirror (CC Switch only)
 
-# ── Colors ────────────────────────────────────────────────────────────────────
+# ── Colors ────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
     RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
     BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -31,18 +47,24 @@ err()   { printf "${RED}[ERR ]${NC}  %s\n" "$*" >&2; }
 step()  { printf "\n${BOLD}${CYAN}▶ %s${NC}\n" "$*"; }
 die()   { err "$*"; exit 1; }
 
-# ── Detect platform ───────────────────────────────────────────────────────────
+# ── Millisecond timer (cross-platform: python3 or date fallback) ──────────
+_now_ms() {
+    python3 -c "import time; print(int(time.time()*1000))" 2>/dev/null \
+        || echo $(($(date +%s) * 1000))
+}
+
+# ── Detect platform ───────────────────────────────────────────────────────
 detect_platform() {
-    local os arch libc=""
+    local os arch
     os="$(uname -s)"
     arch="$(uname -m)"
 
-    if ldd --version 2>&1 | grep -qi musl 2>/dev/null; then
-        libc="-musl"
-    fi
-
     case "$os" in
         Darwin)
+            # Rosetta 2: shell running as x64 on an ARM Mac — use native arm64 binary
+            if [[ "$arch" = "x86_64" ]] && [[ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ]]; then
+                arch="arm64"
+            fi
             case "$arch" in
                 arm64)  PLATFORM="darwin-arm64" ;;
                 x86_64) PLATFORM="darwin-x64" ;;
@@ -50,11 +72,20 @@ detect_platform() {
             esac
             ;;
         Linux)
+            # musl detection: check library files and ldd output
+            local libc=""
+            if [ -f /lib/libc.musl-x86_64.so.1 ] || [ -f /lib/libc.musl-aarch64.so.1 ] || \
+               ldd /bin/ls 2>&1 | grep -q musl 2>/dev/null; then
+                libc="-musl"
+            fi
             case "$arch" in
                 x86_64)        PLATFORM="linux-x64${libc}" ;;
                 aarch64|arm64) PLATFORM="linux-arm64${libc}" ;;
                 *) die "Unsupported Linux architecture: $arch" ;;
             esac
+            ;;
+        MINGW*|MSYS*|CYGWIN*)
+            die "Windows is not supported by this script. Use install.ps1 instead."
             ;;
         *)
             die "Unsupported OS: $os"
@@ -64,7 +95,7 @@ detect_platform() {
     info "Platform: ${PLATFORM}"
 }
 
-# ── Install directory ─────────────────────────────────────────────────────────
+# ── Install directory (used only in fallback) ─────────────────────────────
 detect_install_dir() {
     if [[ "${PLATFORM}" == darwin-* ]]; then
         if [[ -w "/usr/local/bin" ]]; then
@@ -79,7 +110,7 @@ detect_install_dir() {
     info "Install dir: ${INSTALL_DIR}"
 }
 
-# ── Mirror selection ──────────────────────────────────────────────────────────
+# ── Mirror selection (concurrent speed test) ──────────────────────────────
 MIRRORS=(
     "https://github.com"
     "https://ghfast.top/https://github.com"
@@ -88,34 +119,70 @@ MIRRORS=(
     "https://kkgithub.com"
 )
 
-SELECTED_MIRROR=""
+_mirror_label() {
+    local m="$1"
+    case "$m" in
+        "$GCS_BUCKET")        printf "GCS (Anthropic)" ;;
+        "https://github.com") printf "github.com" ;;
+        *)                    printf '%s' "$m" | sed 's|https://\([^/]*\).*|\1|' ;;
+    esac
+}
 
 select_mirror() {
-    step "Selecting fastest mirror..."
-    local test_path="/${RELEASES_REPO}/releases"
+    step "Testing mirrors..."
+    local result_dir
+    result_dir="$(mktemp -d)"
 
-    for m in "${MIRRORS[@]}"; do
-        local url="${m}${test_path}"
-        if curl -sI --connect-timeout 8 --max-time 10 "$url" &>/dev/null; then
-            SELECTED_MIRROR="$m"
-            if [[ "$m" == "https://github.com" ]]; then
-                ok "Direct: github.com"
+    # Launch concurrent probes for GCS + all GitHub mirrors
+    local all_sources=("$GCS_BUCKET" "${MIRRORS[@]}")
+    local m
+    for m in "${all_sources[@]}"; do
+        (
+            local test_url
+            if [[ "$m" == "$GCS_BUCKET" ]]; then
+                test_url="${m}/latest"
             else
-                ok "Mirror: $m"
+                test_url="${m}/${RELEASES_REPO}/releases"
             fi
-            return
-        fi
-        info "  Unreachable: $m"
+            local t0 t1 ms
+            t0="$(_now_ms)"
+            if curl -sI --connect-timeout 8 --max-time 10 "$test_url" &>/dev/null; then
+                t1="$(_now_ms)"
+                ms=$((t1 - t0))
+                printf '%s\n' "$m" > "${result_dir}/$(printf '%06d' "$ms")_${RANDOM}"
+            fi
+        ) &
     done
+    wait  # all probes finish within --max-time 10s
 
-    die "All mirrors failed. Please check your network connection."
+    # Collect results sorted by latency into MIRROR_ORDER
+    MIRROR_ORDER=()
+    GITHUB_MIRROR=""
+    local f mirror ms
+    # shellcheck disable=SC2012  # filenames are digits+underscore, ls is safe here
+    while IFS= read -r f; do
+        mirror="$(cat "${result_dir}/${f}")"
+        ms="${f%%_*}"
+        ms=$((10#$ms))
+        info "  $(_mirror_label "$mirror"): ${ms}ms"
+        MIRROR_ORDER+=("$mirror")
+        [[ -z "$GITHUB_MIRROR" ]] && [[ "$mirror" != "$GCS_BUCKET" ]] && GITHUB_MIRROR="$mirror"
+    done < <(ls "${result_dir}" 2>/dev/null | sort)
+
+    rm -rf "${result_dir}"
+
+    [[ ${#MIRROR_ORDER[@]} -gt 0 ]] || die "All mirrors failed. Please check your network connection."
+    [[ -n "$GITHUB_MIRROR" ]] || GITHUB_MIRROR="https://github.com"
+
+    ok "Best: $(_mirror_label "${MIRROR_ORDER[0]}")"
 }
 
+# make_download_url always uses a GitHub mirror (CC Switch, fallback paths)
 make_download_url() {
-    printf "%s%s" "${SELECTED_MIRROR}" "$1"
+    printf "%s%s" "${GITHUB_MIRROR}" "$1"
 }
 
-# ── Fetch latest version ──────────────────────────────────────────────────────
+# ── Fetch latest version ──────────────────────────────────────────────────
 get_latest_version() {
     step "Fetching latest version..."
     local api_url="https://api.github.com/repos/${RELEASES_REPO}/releases/latest"
@@ -143,32 +210,34 @@ get_latest_version() {
     info "Latest: v${VERSION}"
 }
 
-# ── Version check ─────────────────────────────────────────────────────────────
+# ── Version check ─────────────────────────────────────────────────────────
 check_installed_version() {
     INSTALLED_VERSION=""
-    if [[ -f "$VERSION_FILE" ]]; then
-        INSTALLED_VERSION="$(cat "$VERSION_FILE" | tr -d '[:space:]')"
+
+    if command -v claude &>/dev/null; then
+        local out
+        out="$(claude --version 2>&1 || true)"
+        if [[ "$out" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            INSTALLED_VERSION="${BASH_REMATCH[1]}"
+        fi
+    fi
+
+    if [[ "$INSTALLED_VERSION" == "$VERSION" ]]; then
+        ok "Claude Code v${VERSION} is already up to date."
+        exit 0
     fi
 
     if [[ -n "$INSTALLED_VERSION" ]]; then
-        if [[ "$INSTALLED_VERSION" == "$VERSION" ]]; then
-            if command -v claude &>/dev/null || [[ -x "${INSTALL_DIR}/claude" ]]; then
-                ok "Claude Code v${VERSION} is already up to date."
-                exit 0
-            fi
-            info "Binary missing, reinstalling..."
-        else
-            info "Upgrading: v${INSTALLED_VERSION} → v${VERSION}"
-        fi
+        info "Upgrading: v${INSTALLED_VERSION} → v${VERSION}"
     else
         info "Installing Claude Code v${VERSION}"
     fi
 }
 
-# ── Git check (Linux only; macOS auto-prompts) ────────────────────────────────
+# ── Git check (Linux only; macOS auto-prompts via Xcode CLT) ─────────────
 check_git() {
     if [[ "${PLATFORM}" == darwin-* ]]; then
-        return  # macOS triggers Xcode CLT prompt automatically
+        return
     fi
 
     if command -v git &>/dev/null; then
@@ -195,60 +264,138 @@ check_git() {
     warn "Continuing without Git — some Claude Code features may not work."
 }
 
-# ── Download & verify ─────────────────────────────────────────────────────────
+# ── Checksum verification via manifest.json ───────────────────────────────
+# Both GCS and GitHub releases use the same manifest.json format:
+#   { "platforms": { "PLATFORM": { "checksum": "HEX64", ... } } }
+_verify_from_manifest() {
+    local bin_file="$1" manifest_url="$2"
+
+    local manifest
+    manifest="$(curl -fsSL --connect-timeout 15 --max-time 30 "$manifest_url" 2>/dev/null || true)"
+    if [[ -z "$manifest" ]]; then
+        warn "Could not download manifest.json, skipping verification."
+        return
+    fi
+
+    local checksum=""
+    # [^}]* matches across newlines (anything that's not a closing brace)
+    if [[ "$manifest" =~ \"${PLATFORM}\"[^}]*\"checksum\"[[:space:]]*:[[:space:]]*\"([a-f0-9]{64})\" ]]; then
+        checksum="${BASH_REMATCH[1]}"
+    fi
+
+    if [[ -z "$checksum" ]]; then
+        warn "No checksum found for ${PLATFORM} in manifest.json, skipping."
+        return
+    fi
+
+    local actual
+    if command -v sha256sum &>/dev/null; then
+        actual="$(sha256sum "$bin_file" | awk '{print $1}')"
+    elif command -v shasum &>/dev/null; then
+        actual="$(shasum -a 256 "$bin_file" | awk '{print $1}')"
+    else
+        warn "No sha256sum/shasum found, skipping checksum."
+        return
+    fi
+
+    if [[ "$actual" == "$checksum" ]]; then
+        ok "SHA-256 verified."
+    else
+        err "Checksum mismatch!  Expected: ${checksum}  Got: ${actual}"
+        die "The downloaded file may be corrupted."
+    fi
+}
+
+# ── Download & verify ─────────────────────────────────────────────────────
 download_and_verify() {
     step "Downloading claude-${VERSION}-${PLATFORM}..."
-
-    local filename="claude-${VERSION}-${PLATFORM}"
-    local dl_url ck_url
-    dl_url="$(make_download_url "/${RELEASES_REPO}/releases/download/v${VERSION}/${filename}")"
-    ck_url="$(make_download_url "/${RELEASES_REPO}/releases/download/v${VERSION}/sha256sums.txt")"
+    mkdir -p "${DOWNLOAD_DIR}"
 
     TMP_DIR="$(mktemp -d)"
     trap 'rm -rf "${TMP_DIR}"' EXIT
 
-    local bin_file="${TMP_DIR}/${filename}"
-    local ck_file="${TMP_DIR}/sha256sums.txt"
-
-    info "URL: ${dl_url}"
-    if ! curl -fL --connect-timeout 30 --max-time 300 \
-         --progress-bar -o "${bin_file}" "${dl_url}"; then
-        die "Download failed. Try a different mirror or check your connection."
-    fi
-
-    if curl -fsSL --connect-timeout 15 --max-time 30 \
-         -o "${ck_file}" "${ck_url}" 2>/dev/null; then
-        local expected actual
-        expected="$(grep -F "${filename}" "${ck_file}" | awk '{print $1}')"
-        if [[ -n "$expected" ]]; then
-            if command -v sha256sum &>/dev/null; then
-                actual="$(sha256sum "${bin_file}" | awk '{print $1}')"
-            elif command -v shasum &>/dev/null; then
-                actual="$(shasum -a 256 "${bin_file}" | awk '{print $1}')"
-            else
-                warn "No sha256sum/shasum found, skipping checksum."
-                actual="$expected"
-            fi
-            if [[ "$actual" == "$expected" ]]; then
-                ok "SHA-256 verified."
-            else
-                err "Checksum mismatch!  Expected: ${expected}  Got: ${actual}"
-                die "The downloaded file may be corrupted."
-            fi
+    local bin_file="${TMP_DIR}/claude-${VERSION}-${PLATFORM}"
+    local mirror
+    for mirror in "${MIRROR_ORDER[@]}"; do
+        if [[ "$mirror" == "$GCS_BUCKET" ]]; then
+            _download_from_gcs "$bin_file" && break
         else
-            warn "No checksum entry for ${filename}, skipping."
+            _download_from_github "$bin_file" "$mirror" && break
         fi
-    else
-        warn "Could not download checksums, skipping verification."
-    fi
+        warn "  Failed, trying next source..."
+    done
 
-    BINARY_FILE="${bin_file}"
+    [[ -f "$bin_file" ]] || die "Download failed from all sources. Check your network connection."
+
+    BINARY_FILE="$bin_file"
+    chmod +x "${BINARY_FILE}"
 }
 
-# ── Install binary ────────────────────────────────────────────────────────────
-install_binary() {
-    step "Installing..."
-    chmod +x "${BINARY_FILE}"
+_download_from_gcs() {
+    local bin_file="$1"
+    local dl_url="${GCS_BUCKET}/${VERSION}/${PLATFORM}/claude"
+    local manifest_url="${GCS_BUCKET}/${VERSION}/manifest.json"
+
+    info "Source: GCS (official Anthropic)"
+    info "URL: ${dl_url}"
+
+    if ! curl -fL --connect-timeout 30 --max-time 300 \
+         --progress-bar -o "${bin_file}" "${dl_url}" 2>/dev/null; then
+        return 1
+    fi
+
+    _verify_from_manifest "$bin_file" "$manifest_url"
+}
+
+_download_from_github() {
+    local bin_file="$1" mirror="$2"
+    local filename="claude-${VERSION}-${PLATFORM}"
+    local dl_url="${mirror}/${RELEASES_REPO}/releases/download/v${VERSION}/${filename}"
+    local manifest_url="${mirror}/${RELEASES_REPO}/releases/download/v${VERSION}/manifest.json"
+
+    info "Source: $(_mirror_label "$mirror")"
+    info "URL: ${dl_url}"
+
+    if ! curl -fL --connect-timeout 30 --max-time 300 \
+         --progress-bar -o "${bin_file}" "${dl_url}" 2>/dev/null; then
+        return 1
+    fi
+
+    _verify_from_manifest "$bin_file" "$manifest_url"
+}
+
+# ── Run claude install (with fallback) ────────────────────────────────────
+run_claude_install() {
+    step "Setting up Claude Code..."
+    info "Running: claude install${TARGET:+ $TARGET}"
+    info "This may download additional components — please wait up to 90s..."
+
+    local install_ok=false
+    local install_cmd=("${BINARY_FILE}" install)
+    [[ -n "$TARGET" ]] && install_cmd+=("$TARGET")
+
+    if command -v timeout &>/dev/null; then
+        if timeout 90 "${install_cmd[@]}"; then
+            install_ok=true
+        fi
+    else
+        if "${install_cmd[@]}"; then
+            install_ok=true
+        fi
+    fi
+
+    if $install_ok; then
+        ok "claude install completed."
+        return
+    fi
+
+    warn "claude install failed or timed out — switching to fallback installation."
+    fallback_install
+}
+
+# ── Fallback: manual install when claude install fails ────────────────────
+fallback_install() {
+    detect_install_dir
 
     local dest="${INSTALL_DIR}/claude"
     if [[ -f "$dest" ]]; then
@@ -260,10 +407,12 @@ install_binary() {
 
     mkdir -p "${DATA_DIR}"
     printf '%s\n' "${VERSION}" > "${VERSION_FILE}"
-    ok "Installed: ${dest}"
+    ok "Installed (fallback): ${dest}"
+
+    setup_path
 }
 
-# ── PATH setup ────────────────────────────────────────────────────────────────
+# ── PATH setup (used only in fallback) ────────────────────────────────────
 setup_path() {
     if printf '%s\n' "${PATH//:/$'\n'}" | grep -qx "${INSTALL_DIR}"; then
         return
@@ -287,12 +436,12 @@ setup_path() {
     $added || warn "Add manually: ${export_line}"
 }
 
-# ── Write ~/.claude.json ──────────────────────────────────────────────────────
+# ── Write ~/.claude.json ──────────────────────────────────────────────────
 write_claude_json() {
     if [[ -f "$CLAUDE_JSON" ]]; then
-        # Merge: add hasCompletedOnboarding if python3 available
         if command -v python3 &>/dev/null; then
-            python3 - <<'PYEOF' 2>/dev/null && ok "~/.claude.json: onboarding skip set." && return
+            # shellcheck disable=SC2088 # tilde is in Python string, not bash
+        python3 - <<'PYEOF' 2>/dev/null && ok "~/.claude.json: onboarding skip set." && return
 import json, os
 p = os.path.expanduser("~/.claude.json")
 with open(p) as f:
@@ -302,7 +451,6 @@ with open(p, "w") as f:
     json.dump(d, f, indent=2)
 PYEOF
         fi
-        # Fallback: just note we couldn't merge
         warn "Could not update ~/.claude.json — set hasCompletedOnboarding manually if needed."
     else
         printf '{"hasCompletedOnboarding": true}\n' > "$CLAUDE_JSON"
@@ -310,11 +458,10 @@ PYEOF
     fi
 }
 
-# ── Configure API / Provider ──────────────────────────────────────────────────
+# ── Configure API / Provider ──────────────────────────────────────────────
 configure_api_key() {
     step "Configuring API access..."
 
-    # Already configured?
     local existing_key="${ANTHROPIC_API_KEY:-}"
     if [[ -n "$existing_key" ]] && [[ "$existing_key" != "PLACEHOLDER_USE_CC_SWITCH" ]]; then
         ok "ANTHROPIC_API_KEY already set."
@@ -322,7 +469,6 @@ configure_api_key() {
         return
     fi
 
-    # Test Anthropic connectivity
     local can_reach=false
     if curl -sf --connect-timeout 5 --max-time 5 \
         -o /dev/null "https://api.anthropic.com" 2>/dev/null; then
@@ -339,7 +485,6 @@ configure_api_key() {
     done
 
     if $CC_SWITCH_INSTALLED; then
-        # CC Switch handles real config; write placeholder so claude starts immediately
         info "CC Switch installed → setting placeholder provider config..."
         for rc in "${profile_files[@]}"; do
             grep -qF "ANTHROPIC_BASE_URL" "$rc" 2>/dev/null || \
@@ -352,7 +497,6 @@ configure_api_key() {
         ok "Placeholder set. Open CC Switch to configure your Provider and API Key."
 
     elif $can_reach; then
-        # Direct Anthropic access — prompt for real key
         info "Anthropic API is reachable directly."
         if [ -t 0 ]; then
             printf "\n  ${YELLOW}Enter your Anthropic API Key (sk-ant-...), or press Enter to skip:${NC}\n"
@@ -372,7 +516,6 @@ configure_api_key() {
         fi
 
     else
-        # No direct access, no CC Switch
         warn "Cannot reach api.anthropic.com directly."
         printf "\n"
         printf "  ${YELLOW}Recommended options:${NC}\n"
@@ -387,7 +530,7 @@ configure_api_key() {
     write_claude_json
 }
 
-# ── CC Switch: macOS ──────────────────────────────────────────────────────────
+# ── CC Switch: macOS ──────────────────────────────────────────────────────
 install_cc_switch_macos() {
     local cc_ver="$1"
     local filename="CC-Switch-v${cc_ver}-macOS.tar.gz"
@@ -419,13 +562,11 @@ install_cc_switch_macos() {
         CC_SWITCH_INSTALLED=true
     else
         warn "CC Switch.app not found in archive."
-        info "Archive contents:"
-        tar -tzf "$tmp_file" 2>/dev/null | head -10 || true
         CC_SWITCH_INSTALLED=false
     fi
 }
 
-# ── CC Switch: Linux ──────────────────────────────────────────────────────────
+# ── CC Switch: Linux ──────────────────────────────────────────────────────
 install_cc_switch_linux() {
     local cc_ver="$1"
     local arch_suffix="x86_64"
@@ -434,6 +575,8 @@ install_cc_switch_linux() {
     local filename="CC-Switch-v${cc_ver}-Linux-${arch_suffix}.AppImage"
     local cc_url
     cc_url="$(make_download_url "/farion1231/cc-switch/releases/download/v${cc_ver}/${filename}")"
+
+    [[ -z "$INSTALL_DIR" ]] && detect_install_dir
     local dest="${INSTALL_DIR}/cc-switch"
 
     info "Downloading ${filename}..."
@@ -449,7 +592,7 @@ install_cc_switch_linux() {
     fi
 }
 
-# ── CC Switch prompt ──────────────────────────────────────────────────────────
+# ── CC Switch prompt ──────────────────────────────────────────────────────
 install_cc_switch_prompt() {
     [ -t 0 ] || return   # Skip in non-interactive (piped) mode
 
@@ -462,7 +605,6 @@ install_cc_switch_prompt() {
 
     step "Installing CC Switch..."
 
-    # Get version
     local cc_ver=""
     local cc_api_response
     cc_api_response="$(curl -sf --connect-timeout 8 --max-time 15 \
@@ -490,7 +632,7 @@ install_cc_switch_prompt() {
     fi
 }
 
-# ── Done ──────────────────────────────────────────────────────────────────────
+# ── Done ──────────────────────────────────────────────────────────────────
 print_done() {
     printf "\n"
     printf "${GREEN}${BOLD}  ✓ Claude Code v%s installed!${NC}\n\n" "${VERSION}"
@@ -511,28 +653,27 @@ print_done() {
     printf "  To upgrade: re-run this installer\n"
     printf "  To uninstall: run uninstall.sh\n\n"
 
-    if ! printf '%s\n' "${PATH//:/$'\n'}" | grep -qx "${INSTALL_DIR}"; then
+    if [[ -n "$INSTALL_DIR" ]] && ! printf '%s\n' "${PATH//:/$'\n'}" | grep -qx "${INSTALL_DIR}"; then
         printf "${YELLOW}  Restart your shell to use 'claude' command.${NC}\n\n"
     fi
 }
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── Entry point ───────────────────────────────────────────────────────────
 main() {
     printf "\n${BOLD}${CYAN}━━━ Claude Code Installer ━━━${NC}  ProjectAILeap\n"
     printf "Source: github.com/ProjectAILeap/claude-code-releases\n\n"
 
     detect_platform
-    detect_install_dir
     get_latest_version
     check_installed_version
     check_git
     select_mirror
     download_and_verify
-    install_binary
-    setup_path
+    run_claude_install
     install_cc_switch_prompt
     configure_api_key
     print_done
 }
 
-main "$@"
+# Allow sourcing for testing without executing main
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] || main "$@"

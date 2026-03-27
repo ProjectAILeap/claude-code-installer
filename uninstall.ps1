@@ -86,12 +86,92 @@ function Uninstall-CcSwitch {
     }
 }
 
+function Uninstall-ViaWinget {
+    Write-Info "Uninstalling Claude Code via winget..."
+    try {
+        $proc = Start-Process winget `
+            -ArgumentList "uninstall --id Anthropic.ClaudeCode --silent --exact" `
+            -Wait -PassThru -ErrorAction Stop
+        if ($proc.ExitCode -eq 0) {
+            Write-Ok "Claude Code uninstalled via winget."
+        } else {
+            Write-Warn "winget uninstall exited with code $($proc.ExitCode)."
+        }
+    } catch {
+        Write-Warn "winget uninstall failed: $($_.Exception.Message)"
+    }
+}
+
 function Main {
     Write-Host ""
     Write-Host "=== Claude Code Windows Uninstaller ===  ProjectAILeap" -ForegroundColor Cyan
     Write-Host ""
 
-    # Detect install location; also check Get-Command, but only if in a user-writable directory
+    # Detect winget-managed installation
+    $isWinget = $false
+    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+    if ($wingetCmd) {
+        $wingetList = & winget list --id Anthropic.ClaudeCode --exact 2>$null
+        $isWinget = ($wingetList -match "Anthropic\.ClaudeCode")
+    }
+
+    if ($isWinget) {
+        Write-Step "Detected winget installation"
+        Write-Info "Claude Code was installed via winget."
+        Write-Host ""
+
+        $removeWinget = Ask-YesNo "Remove Claude Code (winget uninstall)?"
+        $removeConfig = $false
+        $removeCcSwitch = $false
+        $removeAnthropicEnv = $false
+
+        if ((Test-Path $CLAUDE_CONFIG_DIR) -or (Test-Path $CLAUDE_CONFIG_FILE)) {
+            $removeConfig = Ask-YesNo "Remove Claude configuration (~\.claude\ and ~\.claude.json)?"
+        }
+        $ccEntry = Find-CcSwitch
+        if ($ccEntry) {
+            $removeCcSwitch = Ask-YesNo "Remove CC Switch ($($ccEntry.DisplayName) v$($ccEntry.DisplayVersion))?"
+        }
+        $anthropicKeys = @("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL") |
+            Where-Object { $null -ne [Environment]::GetEnvironmentVariable($_, "User") }
+        if ($anthropicKeys) {
+            $removeAnthropicEnv = Ask-YesNo "Remove ANTHROPIC_* variables from user environment ($($anthropicKeys -join ', '))?"
+        }
+
+        if (-not ($removeWinget -or $removeConfig -or $removeCcSwitch -or $removeAnthropicEnv)) {
+            Write-Host "`nNothing selected. Exiting."
+            exit 0
+        }
+
+        Write-Host ""
+        Write-Host "The following will be removed:" -ForegroundColor Yellow
+        if ($removeWinget)       { Write-Host "  - Claude Code (via winget)" }
+        if ($removeConfig)       { Write-Host "  - Config:    $CLAUDE_CONFIG_DIR  +  $CLAUDE_CONFIG_FILE" }
+        if ($removeCcSwitch)     { Write-Host "  - CC Switch" }
+        if ($removeAnthropicEnv) { Write-Host "  - ANTHROPIC_* user environment variables" }
+        Write-Host ""
+
+        if (-not (Ask-YesNo "Proceed?")) {
+            Write-Host "`nCancelled."
+            exit 0
+        }
+
+        Write-Step "Removing..."
+        if ($removeWinget)       { Uninstall-ViaWinget }
+        if ($removeConfig) {
+            if (Test-Path $CLAUDE_CONFIG_DIR)  { Remove-Item $CLAUDE_CONFIG_DIR  -Recurse -Force; Write-Ok "Removed: $CLAUDE_CONFIG_DIR" }
+            if (Test-Path $CLAUDE_CONFIG_FILE) { Remove-Item $CLAUDE_CONFIG_FILE -Force;          Write-Ok "Removed: $CLAUDE_CONFIG_FILE" }
+        }
+        if ($removeCcSwitch -and $ccEntry) { Uninstall-CcSwitch -CcEntry $ccEntry }
+        if ($removeAnthropicEnv)           { Remove-AnthropicEnv }
+
+        Write-Host ""
+        Write-Host "  Uninstall complete." -ForegroundColor Green
+        Write-Host ""
+        exit 0
+    }
+
+    # Detect native install location; also check Get-Command, but only if in a user-writable directory
     # (avoids touching system shims in C:\Windows\system32 left by npm or other tools)
     $foundExes = @()
     if (Test-Path $CLAUDE_EXE) { $foundExes += $CLAUDE_EXE }

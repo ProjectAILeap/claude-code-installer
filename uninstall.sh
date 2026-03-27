@@ -53,7 +53,9 @@ find_installation() {
     fi
 
     INSTALL_DIR=""
-    [[ -n "$BINARY_PATH" ]] && INSTALL_DIR="$(dirname "${BINARY_PATH}")"
+    if [[ -n "$BINARY_PATH" ]]; then
+        INSTALL_DIR="$(dirname "${BINARY_PATH}")"
+    fi
 }
 
 # ── Detect CC Switch ──────────────────────────────────────────────────────────

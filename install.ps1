@@ -31,6 +31,8 @@ $GIT_MIN_VER      = [Version]"2.40.0"
 $GIT_FALLBACK_VER = "2.47.1"
 $GIT_FALLBACK_TAG = "v2.47.1.windows.1"
 
+$GCS_BUCKET = "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases"
+
 $MIRRORS = @(
     "https://github.com",
     "https://ghfast.top/https://github.com",
@@ -53,10 +55,16 @@ function Exit-WithError {
 }
 
 # -- Mirror selection ----------------------------------------------------------
-$global:SelectedMirror = ""
+$global:SelectedMirror     = ""
+$global:GithubMirror       = ""   # fastest non-GCS mirror (used for CC Switch / Git)
+$global:IsGCS              = $false
+$global:InstalledViaWinget = $false
 
 function Get-MirrorTestUrl {
     param([string]$Mirror)
+    if ($Mirror -eq $GCS_BUCKET) {
+        return "$GCS_BUCKET/latest"
+    }
     if ($Mirror -match '/https://github\.com$') {
         return ($Mirror -replace '/https://github\.com$', '/https://raw.githubusercontent.com') + `
                "/ProjectAILeap/claude-code-installer/main/README.md"
@@ -65,10 +73,11 @@ function Get-MirrorTestUrl {
 }
 
 function Select-Mirror {
-    Write-Step "Testing mirror speeds..."
+    Write-Step "Testing mirror speeds (GCS + GitHub mirrors)..."
 
+    $allSources = @($GCS_BUCKET) + $MIRRORS
     $jobs = @()
-    foreach ($m in $MIRRORS) {
+    foreach ($m in $allSources) {
         $url = Get-MirrorTestUrl $m
         $jobs += Start-Job -ScriptBlock {
             param($mirror, $u)
@@ -95,7 +104,9 @@ function Select-Mirror {
     $reachable = @($allResults | Where-Object { $_.Ok })
 
     foreach ($r in $allResults) {
-        $t = $r.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
+        $t = if ($r.Mirror -eq $GCS_BUCKET) { "GCS (official)" } else {
+            $r.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
+        }
         if ($r.Ok) {
             Write-Info ("  {0,-30} {1,6} ms" -f $t, $r.Ms)
         } else {
@@ -107,17 +118,28 @@ function Select-Mirror {
     if ($reachable.Count -gt 0) {
         $best = $reachable[0]
         $global:SelectedMirror = $best.Mirror
-        $tag = $best.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
+        $global:IsGCS = ($best.Mirror -eq $GCS_BUCKET)
+        $tag = if ($global:IsGCS) { "GCS (official)" } else {
+            $best.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
+        }
         Write-Ok "Selected: $tag ($($best.Ms) ms)"
+
+        # Track fastest non-GCS mirror for CC Switch / Git downloads
+        $firstGithub = $reachable | Where-Object { $_.Mirror -ne $GCS_BUCKET } | Select-Object -First 1
+        $global:GithubMirror = if ($firstGithub) { $firstGithub.Mirror } else { "https://ghfast.top/https://github.com" }
     } else {
         $global:SelectedMirror = "https://ghfast.top/https://github.com"
+        $global:GithubMirror   = "https://ghfast.top/https://github.com"
+        $global:IsGCS = $false
         Write-Warn "All mirror checks timed out. Defaulting to ghfast.top."
     }
 }
 
 function Get-DownloadUrl {
     param([string]$Path)
-    return "$global:SelectedMirror$Path"
+    # Always use a GitHub mirror (GCS does not host CC Switch / Git releases)
+    $mirror = if ($global:GithubMirror) { $global:GithubMirror } else { "https://github.com" }
+    return "$mirror$Path"
 }
 
 # -- Fetch latest version ------------------------------------------------------
@@ -239,7 +261,9 @@ function Invoke-DownloadMirror {
         [string]$OutFile,
         [string]$Label = "file"
     )
-    $order = @($global:SelectedMirror) + ($MIRRORS | Where-Object { $_ -ne $global:SelectedMirror })
+    # Use GitHub mirrors only (GCS has a different URL structure and is not used here)
+    $primary = if ($global:GithubMirror) { $global:GithubMirror } else { "https://github.com" }
+    $order = @($primary) + ($MIRRORS | Where-Object { $_ -ne $primary })
     $seen  = @()
     foreach ($m in $order) {
         $url = "$m$Path"
@@ -253,26 +277,25 @@ function Invoke-DownloadMirror {
     return $false
 }
 
-# -- SHA-256 verification ------------------------------------------------------
+# -- SHA-256 verification via manifest.json ------------------------------------
 function Test-Checksum {
     param(
         [string]$FilePath,
-        [string]$ChecksumFile,
-        [string]$FileName
+        [string]$ManifestFile,
+        [string]$Platform
     )
 
-    $content  = Get-Content $ChecksumFile -Raw
     $expected = ""
-
-    foreach ($line in ($content -split "`n")) {
-        $line = $line.Trim()
-        if ($line -match "^([a-f0-9]{64})\s+\*?$FileName") {
-            $expected = $Matches[1]; break
-        }
+    try {
+        $manifest = Get-Content $ManifestFile -Raw | ConvertFrom-Json -ErrorAction Stop
+        $expected = $manifest.platforms.$Platform.checksum
+    } catch {
+        Write-Warn "Could not parse manifest.json, skipping verification."
+        return $true
     }
 
     if (-not $expected) {
-        Write-Warn "No checksum entry for $FileName, skipping verification."
+        Write-Warn "No checksum for '$Platform' in manifest, skipping verification."
         return $true
     }
 
@@ -560,6 +583,28 @@ function Install-CcSwitch {
     }
 }
 
+# -- Optional: winget install path ---------------------------------------------
+function Install-ViaWinget {
+    Write-Step "Installing Claude Code via winget..."
+    try {
+        $proc = Start-Process winget `
+            -ArgumentList "install -e --id Anthropic.ClaudeCode --source winget --accept-source-agreements --accept-package-agreements --silent" `
+            -Wait -PassThru -ErrorAction Stop
+        if ($proc.ExitCode -eq 0) {
+            Write-Ok "Claude Code installed via winget."
+            Write-Info "Note: winget installation does not set up shell integration or auto-update."
+            Write-Info "To upgrade later: winget upgrade Anthropic.ClaudeCode"
+            $global:InstalledViaWinget = $true
+        } else {
+            Write-Warn "winget failed (exit $($proc.ExitCode)), falling back to mirror download..."
+            $global:InstalledViaWinget = $false
+        }
+    } catch {
+        Write-Warn "winget failed: $($_.Exception.Message), falling back to mirror download..."
+        $global:InstalledViaWinget = $false
+    }
+}
+
 # -- Main ----------------------------------------------------------------------
 function Main {
     Write-Host ""
@@ -575,131 +620,189 @@ function Main {
     # 2. Platform (aligns with official: supports win32-arm64)
     $platform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "win32-arm64" } else { "win32-x64" }
 
-    # 3. Resolve target version
-    $targetVersion = Get-LatestVersion
-
-    # 4. Check installed version via claude --version (aligns with official)
-    $installedVersion = Get-InstalledVersion
-    if ($installedVersion -eq $targetVersion) {
-        Write-Ok "Claude Code v$targetVersion is already up to date."
-        exit 0
-    }
-    if ($installedVersion) {
-        Write-Info "Upgrading: v$installedVersion -> v$targetVersion"
-    } else {
-        Write-Info "Installing Claude Code v$targetVersion"
+    # 2.5. Optional: winget path
+    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+    if ($wingetCmd) {
+        Write-Host ""
+        Write-Host "  winget is available on this system." -ForegroundColor Cyan
+        $useWinget = Read-Host "  Install Claude Code via winget? [y/N]"
+        if ($useWinget -match '^[Yy]') {
+            Install-ViaWinget
+        }
     }
 
-    # 5. Select fastest mirror
-    Select-Mirror
+    if (-not $global:InstalledViaWinget) {
+        # 3. Resolve target version
+        $targetVersion = Get-LatestVersion
+
+        # 4. Check installed version via claude --version (aligns with official)
+        $installedVersion = Get-InstalledVersion
+        if ($installedVersion -eq $targetVersion) {
+            Write-Ok "Claude Code v$targetVersion is already up to date."
+            exit 0
+        }
+        if ($installedVersion) {
+            Write-Info "Upgrading: v$installedVersion -> v$targetVersion"
+        } else {
+            Write-Info "Installing Claude Code v$targetVersion"
+        }
+
+        # 5. Select fastest mirror (GCS + GitHub mirrors)
+        Select-Mirror
+    }
 
     # 6. Ensure Git
     Ensure-Git
 
-    # 7. Prepare download dir (aligns with official: ~/.claude/downloads)
-    New-Item -ItemType Directory -Force -Path $DOWNLOAD_DIR | Out-Null
+    if (-not $global:InstalledViaWinget) {
+        # 7. Prepare download dir (aligns with official: ~/.claude/downloads)
+        New-Item -ItemType Directory -Force -Path $DOWNLOAD_DIR | Out-Null
 
-    $fileName  = "claude-$targetVersion-$platform.exe"
-    $dlPath    = "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
-    $ckPath    = "/$RELEASES_REPO/releases/download/v$targetVersion/sha256sums.txt"
-    $binaryPath = "$DOWNLOAD_DIR\$fileName"
-    $ckFile    = "$DOWNLOAD_DIR\sha256sums-$targetVersion.txt"
+        $fileName    = "claude-$targetVersion-$platform.exe"
+        $binaryPath  = "$DOWNLOAD_DIR\$fileName"
+        $manifestFile = "$DOWNLOAD_DIR\manifest-$targetVersion.json"
 
-    # 8. Download checksums (for cache verification)
-    $ckOk = $false
-    if (Test-Path $ckFile) {
-        $ckOk = $true
-    } else {
-        $ckOk = Invoke-DownloadMirror -Path $ckPath -OutFile $ckFile -Label "checksums"
-    }
-
-    # 9. Download binary (with cache)
-    $needDownload = $true
-    if (Test-Path $binaryPath) {
-        if ($ckOk) {
-            if (Test-Checksum -FilePath $binaryPath -ChecksumFile $ckFile -FileName $fileName) {
-                Write-Step "Using cached $fileName (checksum OK)..."
-                $needDownload = $false
-            } else {
-                Write-Warn "Cached file checksum mismatch, re-downloading..."
-                Remove-Item $binaryPath -Force -ErrorAction SilentlyContinue
-            }
+        # Build download URLs based on selected source
+        if ($global:IsGCS) {
+            $dlUrl      = "$GCS_BUCKET/$targetVersion/$platform/claude.exe"
+            $manifestUrl = "$GCS_BUCKET/$targetVersion/manifest.json"
         } else {
-            Write-Step "Using cached $fileName (checksum unavailable)..."
-            $needDownload = $false
+            $dlUrl      = "$global:SelectedMirror/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
+            $manifestUrl = "$global:SelectedMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest.json"
         }
-    }
 
-    if ($needDownload) {
-        Write-Step "Downloading $fileName..."
-        Write-Info "Large binary (~230 MB), no progress bar -- please wait..."
-        if (-not (Invoke-DownloadMirror -Path $dlPath -OutFile $binaryPath -Label "Claude Code binary")) {
-            Exit-WithError "Download failed. Try a different mirror or check your connection."
-        }
-        if ($needDownload -and -not $NoVerify -and $ckOk) {
-            if (-not (Test-Checksum -FilePath $binaryPath -ChecksumFile $ckFile -FileName $fileName)) {
-                Remove-Item $binaryPath -Force -ErrorAction SilentlyContinue
-                Exit-WithError "Checksum verification failed. The file may be corrupted."
+        # 8. Download manifest.json (for cache verification)
+        $manifestOk = $false
+        if (Test-Path $manifestFile) {
+            $manifestOk = $true
+        } else {
+            if ($global:IsGCS) {
+                $manifestOk = Invoke-Download -Url $manifestUrl -OutFile $manifestFile -Label "manifest.json" -RetryCount 2
+                if (-not $manifestOk) {
+                    Write-Warn "GCS manifest unavailable, trying GitHub mirror..."
+                    $fbManifestUrl = "$global:GithubMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest.json"
+                    $manifestOk = Invoke-Download -Url $fbManifestUrl -OutFile $manifestFile -Label "manifest.json (fallback)" -RetryCount 2
+                }
+            } else {
+                $manifestOk = Invoke-DownloadMirror `
+                    -Path "/$RELEASES_REPO/releases/download/v$targetVersion/manifest.json" `
+                    -OutFile $manifestFile -Label "manifest.json"
             }
         }
+
+        # 9. Download binary (with cache)
+        $needDownload = $true
+        if (Test-Path $binaryPath) {
+            if ($manifestOk) {
+                if (Test-Checksum -FilePath $binaryPath -ManifestFile $manifestFile -Platform $platform) {
+                    Write-Step "Using cached $fileName (checksum OK)..."
+                    $needDownload = $false
+                } else {
+                    Write-Warn "Cached file checksum mismatch, re-downloading..."
+                    Remove-Item $binaryPath -Force -ErrorAction SilentlyContinue
+                }
+            } else {
+                Write-Step "Using cached $fileName (manifest unavailable)..."
+                $needDownload = $false
+            }
+        }
+
+        if ($needDownload) {
+            Write-Step "Downloading $fileName..."
+            Write-Info "Large binary (~230 MB), no progress bar -- please wait..."
+
+            $dlOk = $false
+            if ($global:IsGCS) {
+                $dlOk = Invoke-Download -Url $dlUrl -OutFile $binaryPath -Label "Claude Code binary (GCS)"
+                if (-not $dlOk) {
+                    Write-Warn "GCS download failed, falling back to GitHub mirror..."
+                    $global:IsGCS = $false
+                    $dlUrl = "$global:GithubMirror/$RELEASES_REPO/releases/download/v$targetVersion/$fileName"
+                    # Also re-fetch manifest from GitHub if it came from GCS
+                    if ($manifestOk) {
+                        $fbManifestUrl = "$global:GithubMirror/$RELEASES_REPO/releases/download/v$targetVersion/manifest.json"
+                        Remove-Item $manifestFile -Force -ErrorAction SilentlyContinue
+                        $manifestOk = Invoke-Download -Url $fbManifestUrl -OutFile $manifestFile -Label "manifest.json (GitHub)" -RetryCount 2
+                    }
+                    $dlOk = Invoke-DownloadMirror `
+                        -Path "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName" `
+                        -OutFile $binaryPath -Label "Claude Code binary"
+                }
+            } else {
+                $dlOk = Invoke-DownloadMirror `
+                    -Path "/$RELEASES_REPO/releases/download/v$targetVersion/$fileName" `
+                    -OutFile $binaryPath -Label "Claude Code binary"
+            }
+
+            if (-not $dlOk) {
+                Exit-WithError "Download failed. Try a different mirror or check your connection."
+            }
+
+            if (-not $NoVerify -and $manifestOk) {
+                if (-not (Test-Checksum -FilePath $binaryPath -ManifestFile $manifestFile -Platform $platform)) {
+                    Remove-Item $binaryPath -Force -ErrorAction SilentlyContinue
+                    Exit-WithError "Checksum verification failed. The file may be corrupted."
+                }
+            }
+        }
+
+        # 10. Remove Zone.Identifier (cached files may not have been unblocked)
+        Unblock-File -Path $binaryPath -ErrorAction SilentlyContinue
+
+        # 11. Run install; fall back to manual setup if it fails (e.g. CDN unreachable in China)
+        Write-Step "Setting up Claude Code..."
+        Write-Info "Running claude install (may download additional components)..."
+        Write-Info "Please wait up to 90s -- if CDN is unreachable, manual fallback will be used."
+
+        $installJob = Start-Job -ScriptBlock {
+            param($b)
+            $OutputEncoding           = [System.Text.Encoding]::UTF8
+            [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+            & $b install 2>&1
+        } -ArgumentList $binaryPath
+
+        $done = Wait-Job $installJob -Timeout 90
+        if ($done) {
+            @(Receive-Job $installJob -ErrorAction SilentlyContinue) |
+                ForEach-Object { if ($_) { Write-Host "  $_" } }
+            Remove-Job $installJob -Force -ErrorAction SilentlyContinue
+        } else {
+            Stop-Job  $installJob -ErrorAction SilentlyContinue
+            Remove-Job $installJob -Force -ErrorAction SilentlyContinue
+            Write-Warn "claude install timed out (90s). CDN may be unreachable -- switching to manual fallback."
+        }
+
+        # Unified PATH setup -- regardless of whether claude install succeeded or not
+        $LOCAL_BIN = "$env:USERPROFILE\.local\bin"
+        $localExe  = "$LOCAL_BIN\claude.exe"
+        New-Item -ItemType Directory -Force -Path $LOCAL_BIN | Out-Null
+
+        if (Test-Path $localExe) {
+            # claude install placed the binary (with native build) -- keep it, just fix PATH
+            Write-Ok "Claude Code installed by claude install: $localExe"
+        } else {
+            # claude install failed completely -- copy raw binary as fallback
+            Write-Warn "claude install did not place binary, using downloaded binary as fallback."
+            Copy-Item $binaryPath $localExe -Force
+            Unblock-File -Path $localExe -ErrorAction SilentlyContinue
+            Write-Ok "Claude Code installed (fallback): $localExe"
+        }
+
+        # Add LOCAL_BIN to user PATH if not already there
+        $currentUp = [Environment]::GetEnvironmentVariable("Path", "User")
+        if ($null -eq $currentUp) { $currentUp = "" }
+        if (-not $currentUp.Contains($LOCAL_BIN)) {
+            [Environment]::SetEnvironmentVariable("Path", "$currentUp;$LOCAL_BIN", "User")
+            Write-Ok "Added to PATH: $LOCAL_BIN"
+        }
+
+        # Refresh current session PATH so claude is usable immediately
+        $mp = [Environment]::GetEnvironmentVariable("Path", "Machine"); if ($null -eq $mp) { $mp = "" }
+        $up = [Environment]::GetEnvironmentVariable("Path", "User");    if ($null -eq $up) { $up = "" }
+        $env:Path = "$mp;$up"
+        Write-Ok "claude is available in this session immediately."
+        Write-Info "New terminal windows will also have claude in PATH automatically."
     }
-
-    # 10. Remove Zone.Identifier (cached files may not have been unblocked)
-    Unblock-File -Path $binaryPath -ErrorAction SilentlyContinue
-
-    # 11. Run install; fall back to manual setup if it fails (e.g. CDN unreachable in China)
-    Write-Step "Setting up Claude Code..."
-    Write-Info "Running claude install (may download additional components)..."
-    Write-Info "Please wait up to 90s -- if CDN is unreachable, manual fallback will be used."
-
-    $installJob = Start-Job -ScriptBlock {
-        param($b)
-        $OutputEncoding           = [System.Text.Encoding]::UTF8
-        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-        & $b install 2>&1
-    } -ArgumentList $binaryPath
-
-    $done = Wait-Job $installJob -Timeout 90
-    if ($done) {
-        @(Receive-Job $installJob -ErrorAction SilentlyContinue) |
-            ForEach-Object { if ($_) { Write-Host "  $_" } }
-        Remove-Job $installJob -Force -ErrorAction SilentlyContinue
-    } else {
-        Stop-Job  $installJob -ErrorAction SilentlyContinue
-        Remove-Job $installJob -Force -ErrorAction SilentlyContinue
-        Write-Warn "claude install timed out (90s). CDN may be unreachable -- switching to manual fallback."
-    }
-
-    # Unified PATH setup -- regardless of whether claude install succeeded or not
-    $LOCAL_BIN = "$env:USERPROFILE\.local\bin"
-    $localExe  = "$LOCAL_BIN\claude.exe"
-    New-Item -ItemType Directory -Force -Path $LOCAL_BIN | Out-Null
-
-    if (Test-Path $localExe) {
-        # claude install placed the binary (with native build) -- keep it, just fix PATH
-        Write-Ok "Claude Code installed by claude install: $localExe"
-    } else {
-        # claude install failed completely -- copy raw binary as fallback
-        Write-Warn "claude install did not place binary, using downloaded binary as fallback."
-        Copy-Item $binaryPath $localExe -Force
-        Unblock-File -Path $localExe -ErrorAction SilentlyContinue
-        Write-Ok "Claude Code installed (fallback): $localExe"
-    }
-
-    # Add LOCAL_BIN to user PATH if not already there
-    $currentUp = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($null -eq $currentUp) { $currentUp = "" }
-    if (-not $currentUp.Contains($LOCAL_BIN)) {
-        [Environment]::SetEnvironmentVariable("Path", "$currentUp;$LOCAL_BIN", "User")
-        Write-Ok "Added to PATH: $LOCAL_BIN"
-    }
-
-    # Refresh current session PATH so claude is usable immediately
-    $mp = [Environment]::GetEnvironmentVariable("Path", "Machine"); if ($null -eq $mp) { $mp = "" }
-    $up = [Environment]::GetEnvironmentVariable("Path", "User");    if ($null -eq $up) { $up = "" }
-    $env:Path = "$mp;$up"
-    Write-Ok "claude is available in this session immediately."
-    Write-Info "New terminal windows will also have claude in PATH automatically."
 
     # 12. Optional: CC Switch
     Write-Host ""

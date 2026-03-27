@@ -38,18 +38,20 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/cl
 
 ### Windows
 
-**方法一（推荐）：** 下载 [install.bat](https://github.com/ProjectAILeap/claude-code-installer/raw/main/install.bat) 后双击运行
-
-> 仅需这一个文件，脚本会自动从 GitHub 拉取安装程序并执行。
-
-**方法二：** 在 PowerShell 中运行：
+在 PowerShell 中运行：
 
 ```powershell
-# 直连
+# 直连（境外网络 / 有代理）
 irm https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/install.ps1 | iex
 
 # 镜像加速（中国大陆推荐）
 irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/install.ps1 | iex
+```
+
+也可下载 `install.ps1` 后本地运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 ---
@@ -122,8 +124,11 @@ irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-co
 ```bash
 # macOS / Linux
 curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/install.sh | bash
+```
 
-# Windows：重新双击 install.bat
+```powershell
+# Windows
+irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/install.ps1 | iex
 ```
 
 ---
@@ -142,11 +147,7 @@ curl -fsSL https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer
 
 ### Windows
 
-**方法一（推荐）：** 双击 `uninstall.bat`
-
-> 自动从 GitHub 拉取脚本执行，无需处理 ExecutionPolicy 限制。
-
-**方法二：** 在 PowerShell 中在线执行：
+在 PowerShell 中运行：
 
 ```powershell
 # 直连
@@ -156,11 +157,10 @@ irm https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/u
 irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/uninstall.ps1 | iex
 ```
 
-**方法三：** 本地 `.ps1` 文件执行（需先解除安全限制）：
+也可下载 `uninstall.ps1` 后本地运行：
 
 ```powershell
-Unblock-File .\uninstall.ps1
-powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
+powershell -ExecutionPolicy Bypass -File uninstall.ps1
 ```
 
 卸载时可交互选择删除：
@@ -179,8 +179,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 | 平台 | Claude Code | 下载缓存 |
 |------|------------|---------|
 | Windows | 由 `claude install` 自动管理（运行 `where claude` 查看） | `%USERPROFILE%\.claude\downloads` |
-| macOS | `/usr/local/bin/claude` 或 `~/.local/bin/claude` | `~/.local/share/claude-code/` |
-| Linux | `~/.local/bin/claude` | `~/.local/share/claude-code/` |
+| macOS | `/usr/local/bin/claude` 或 `~/.local/bin/claude` | `~/.claude/downloads` |
+| Linux | `~/.local/bin/claude` | `~/.claude/downloads` |
 
 ---
 
@@ -216,7 +216,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1
 > 安装脚本会自动检测并静默安装 Git for Windows（优先从 npmmirror 下载，无需管理员权限），无需手动操作。
 
 **Q: 如何验证二进制完整性？**
-> 脚本自动下载 `sha256sums.txt` 并验证 SHA-256 校验和，与二进制使用相同镜像源下载。已缓存的二进制再次安装时也会重新校验。
+> 脚本自动下载 `manifest.json` 并验证 SHA-256 校验和，与二进制使用相同镜像源下载。已缓存的二进制再次安装时也会重新校验。
 
 **Q: 安装完提示无法连接 Anthropic API 怎么办？**
 > 中国大陆直连 api.anthropic.com 通常不可用。建议安装 CC Switch 并配置国内 Provider（DeepSeek 等）。
