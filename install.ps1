@@ -646,18 +646,37 @@ function Ensure-WingetAlias {
     param([string]$WingetExe)
     # Already accessible by name -- nothing to do
     if (Get-Command winget -ErrorAction SilentlyContinue) { return }
-    # Set alias for current session
+
+    # Set alias for current session immediately
     Set-Alias -Name winget -Value $WingetExe -Scope Global
-    # Persist to $PROFILE so future terminals also have it
-    $aliasLine = "Set-Alias winget `"$WingetExe`"  # added by claude-code-installer"
-    $profilePath = $PROFILE
+
+    # Ensure $PROFILE is loaded in future sessions:
+    # If ExecutionPolicy is Restricted, $PROFILE is never sourced -- set to RemoteSigned.
+    $policy = Get-ExecutionPolicy -Scope CurrentUser -ErrorAction SilentlyContinue
+    if ($policy -eq 'Restricted' -or $policy -eq 'Undefined') {
+        try {
+            Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force -ErrorAction Stop
+            Write-Info "ExecutionPolicy set to RemoteSigned (required to load `$PROFILE)."
+        } catch {
+            Write-Warn "Could not set ExecutionPolicy: $($_.Exception.Message)"
+        }
+    }
+
+    # Write Set-Alias to $PROFILE.CurrentUserCurrentHost
+    # Use explicit property to avoid ambiguity ($PROFILE alone may vary by host)
+    $profilePath = $PROFILE.CurrentUserCurrentHost
+    $profileDir  = Split-Path $profilePath -Parent
+    if (-not (Test-Path $profileDir)) {
+        New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+    }
     if (-not (Test-Path $profilePath)) {
         New-Item -ItemType File -Path $profilePath -Force | Out-Null
     }
-    $existing = Get-Content $profilePath -Raw -ErrorAction SilentlyContinue
+    $aliasLine = "Set-Alias winget `"$WingetExe`"  # added by claude-code-installer"
+    $existing  = Get-Content $profilePath -Raw -ErrorAction SilentlyContinue
     if ($existing -notlike "*Set-Alias winget*") {
-        Add-Content $profilePath "`n$aliasLine"
-        Write-Info "winget alias written to `$PROFILE (future terminals will have 'winget' command)."
+        Add-Content -Path $profilePath -Value "`n$aliasLine" -Encoding UTF8
+        Write-Ok "winget alias written to `$PROFILE -- new PowerShell windows will have 'winget'."
     }
 }
 
