@@ -58,7 +58,9 @@ function Find-Git {
         "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
     )
     return Get-ItemProperty $paths -ErrorAction SilentlyContinue |
-        Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like "Git version *" } |
+        Where-Object { $_.PSObject.Properties['DisplayName'] -and
+            ($_.DisplayName -like "Git version *" -or $_.DisplayName -eq "Git" -or
+             $_.DisplayName -like "Git for Windows*") } |
         Select-Object -First 1
 }
 
