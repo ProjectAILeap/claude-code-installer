@@ -659,6 +659,10 @@ function Install-ViaWinget {
             Write-Info "Note: winget installation does not set up shell integration or auto-update."
             Write-Info "To upgrade later: winget upgrade Anthropic.ClaudeCode"
             $global:InstalledViaWinget = $true
+            # Refresh current session PATH so claude is usable immediately
+            $mp = [Environment]::GetEnvironmentVariable("Path", "Machine"); if ($null -eq $mp) { $mp = "" }
+            $up = [Environment]::GetEnvironmentVariable("Path", "User");    if ($null -eq $up) { $up = "" }
+            $env:Path = "$mp;$up"
         } else {
             Write-Warn "winget failed (exit $($proc.ExitCode)), falling back to mirror download..."
             $global:InstalledViaWinget = $false
