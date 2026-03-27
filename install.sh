@@ -108,6 +108,43 @@ verify_claude_install() {
     [[ "$out" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]
 }
 
+primary_profile_file() {
+    case "${SHELL:-}" in
+        */zsh)
+            if [[ "$(uname)" == "Darwin" ]]; then
+                printf '%s\n' "${HOME}/.zprofile"
+            else
+                printf '%s\n' "${HOME}/.zshrc"
+            fi
+            ;;
+        */fish)
+            printf '%s\n' "${HOME}/.config/fish/config.fish"
+            ;;
+        *)
+            if [[ "$(uname)" == "Darwin" ]]; then
+                printf '%s\n' "${HOME}/.bash_profile"
+            else
+                printf '%s\n' "${HOME}/.bashrc"
+            fi
+            ;;
+    esac
+}
+
+existing_profile_files() {
+    local primary_rc
+    primary_rc="$(primary_profile_file)"
+    local rc_files=()
+    local rc
+
+    rc_files+=("${primary_rc}")
+    for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile"; do
+        [[ "$rc" == "$primary_rc" ]] && continue
+        [[ -f "$rc" ]] && rc_files+=("$rc")
+    done
+
+    printf '%s\n' "${rc_files[@]}"
+}
+
 # ── Detect platform ───────────────────────────────────────────────────────
 detect_platform() {
     local os arch
@@ -527,16 +564,15 @@ setup_path() {
     step "Adding ${INSTALL_DIR} to PATH..."
     local export_line="export PATH=\"${INSTALL_DIR}:\$PATH\""
     local added=false
-    local rc_files=("${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile")
-
-    # macOS terminals commonly start login shells, which load ~/.zprofile or
-    # ~/.bash_profile instead of ~/.zshrc / ~/.bashrc.
-    if [[ "$(uname)" == "Darwin" ]]; then
-        rc_files=("${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile")
-    fi
+    local rc_files=()
+    mapfile -t rc_files < <(existing_profile_files)
 
     for rc in "${rc_files[@]}"; do
-        if [[ -f "$rc" ]] && ! grep -qF "${INSTALL_DIR}" "$rc"; then
+        if [[ ! -e "$rc" ]]; then
+            mkdir -p "$(dirname "$rc")"
+            : > "$rc"
+        fi
+        if ! grep -qF "${INSTALL_DIR}" "$rc"; then
             {
                 printf '\n# Added by claude-code-installer\n'
                 printf '%s\n' "$export_line"
@@ -546,35 +582,6 @@ setup_path() {
             added=true
         fi
     done
-
-    # Fallback: if no rc file exists yet, create one matching the current shell.
-    if ! $added; then
-        local fallback_rc
-        case "${SHELL:-}" in
-            */zsh)
-                if [[ "$(uname)" == "Darwin" ]]; then
-                    fallback_rc="${HOME}/.zprofile"
-                else
-                    fallback_rc="${HOME}/.zshrc"
-                fi
-                ;;
-            */fish) fallback_rc="${HOME}/.config/fish/config.fish" ;;
-            *)
-                if [[ "$(uname)" == "Darwin" ]]; then
-                    fallback_rc="${HOME}/.bash_profile"
-                else
-                    fallback_rc="${HOME}/.bashrc"
-                fi
-                ;;
-        esac
-        {
-            printf '\n# Added by claude-code-installer\n'
-            printf '%s\n' "$export_line"
-        } >> "$fallback_rc"
-        PATH_RC_FILE="$fallback_rc"
-        info "  Created: $fallback_rc"
-        added=true
-    fi
 
     export PATH="${INSTALL_DIR}:${PATH}"
     $added || warn "Add manually: ${export_line}"
@@ -636,12 +643,10 @@ configure_api_key() {
     fi
 
     local profile_files=()
-    local rc_files=("${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile")
-    if [[ "$(uname)" == "Darwin" ]]; then
-        rc_files=("${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile")
-    fi
-    for rc in "${rc_files[@]}"; do
-        [[ -f "$rc" ]] && profile_files+=("$rc")
+    mapfile -t profile_files < <(existing_profile_files)
+    local rc
+    for rc in "${profile_files[@]}"; do
+        [[ -e "$rc" ]] || { mkdir -p "$(dirname "$rc")"; : > "$rc"; }
     done
 
     if $CC_SWITCH_INSTALLED; then
@@ -774,6 +779,10 @@ install_cc_switch_prompt() {
         return
     fi
 
+    if [[ -z "${GITHUB_MIRROR}" ]] || [[ ${#MIRROR_ORDER[@]} -eq 0 ]]; then
+        select_mirror
+    fi
+
     step "Installing CC Switch..."
 
     local cc_ver=""
@@ -866,7 +875,6 @@ main() {
             ok "CC Switch is already installed."
             CC_SWITCH_INSTALLED=true
         else
-            select_mirror
             TMP_DIR="$(mktemp -d)"
             trap 'rm -rf "${TMP_DIR}"' EXIT
             install_cc_switch_prompt
