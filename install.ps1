@@ -690,8 +690,14 @@ function Install-ViaWinget {
         $proc = Start-Process $WingetExe `
             -ArgumentList "install -e --id Anthropic.ClaudeCode --source winget --accept-source-agreements --accept-package-agreements --silent" `
             -Wait -PassThru -ErrorAction Stop
-        if ($proc.ExitCode -eq 0) {
-            Write-Ok "Claude Code installed via winget."
+        # 0 = success; -1978335189 (0x8A150B2B) = no applicable upgrade (already up to date)
+        $alreadyUpToDate = ($proc.ExitCode -eq -1978335189)
+        if ($proc.ExitCode -eq 0 -or $alreadyUpToDate) {
+            if ($alreadyUpToDate) {
+                Write-Ok "Claude Code is already up to date (winget)."
+            } else {
+                Write-Ok "Claude Code installed via winget."
+            }
             Write-Info "Note: winget installation does not set up shell integration or auto-update."
             Write-Info "To upgrade later: winget upgrade Anthropic.ClaudeCode"
             $global:InstalledViaWinget = $true
