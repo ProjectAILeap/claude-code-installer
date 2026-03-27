@@ -66,9 +66,35 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 | 2. 选择镜像 | 自动并行测速，选最快可用的 GitHub 镜像源 |
 | 3. 安装 Git（仅 Windows） | 未安装时自动下载安装 Git for Windows（无需管理员权限） |
 | 4. 下载二进制 | 下载 Claude Code 官方二进制，验证 SHA-256，缓存至 `~/.claude/downloads` |
-| 5. 自动安装 | 执行 `claude install`，由二进制自动完成 PATH 配置和 shell 集成 |
+| 5. 自动安装 | 默认以 `CLAUDE_INSTALL_MODE=auto` 执行安装：可直连时优先运行 `claude install`，不可直连或失败时自动降级到 fallback |
 | 6. 安装 CC Switch（可选） | 询问是否安装 API Provider 切换工具 |
 | 7. 配置 API 访问 | 根据网络环境自动引导配置，确保能直接进入 Claude Code |
+
+### 安装模式与超时
+
+- 默认模式：`CLAUDE_INSTALL_MODE=auto`
+- 可选模式：`auto` / `force` / `skip`
+- 默认超时：`CLAUDE_INSTALL_TIMEOUT=25` 秒
+
+| 模式 | 行为 |
+|------|------|
+| `auto` | 默认模式。先探测 `api.anthropic.com`，可达时运行 `claude install`；不可达时直接 fallback |
+| `force` | 无论网络探测结果如何，都强制尝试 `claude install` |
+| `skip` | 直接跳过 `claude install`，使用 fallback 安装 |
+
+示例：
+
+```bash
+bash install.sh
+CLAUDE_INSTALL_MODE=skip bash install.sh
+CLAUDE_INSTALL_MODE=force CLAUDE_INSTALL_TIMEOUT=40 bash install.sh
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
+$env:CLAUDE_INSTALL_MODE="skip"; powershell -ExecutionPolicy Bypass -File install.ps1
+$env:CLAUDE_INSTALL_MODE="force"; $env:CLAUDE_INSTALL_TIMEOUT="40"; powershell -ExecutionPolicy Bypass -File install.ps1
+```
 
 ### API 访问配置逻辑
 
@@ -178,7 +204,7 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1
 
 | 平台 | Claude Code | 下载缓存 |
 |------|------------|---------|
-| Windows | 由 `claude install` 自动管理（运行 `where claude` 查看） | `%USERPROFILE%\.claude\downloads` |
+| Windows | `%USERPROFILE%\.local\bin\claude.exe`（fallback 与多数脚本路径） | `%USERPROFILE%\.claude\downloads` |
 | macOS | `/usr/local/bin/claude` 或 `~/.local/bin/claude` | `~/.claude/downloads` |
 | Linux | `~/.local/bin/claude` | `~/.claude/downloads` |
 
@@ -211,6 +237,12 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1
 
 **Q: 需要管理员权限吗？**
 > 不需要。Windows 的 Git 和 Claude Code 均安装到用户目录，macOS/Linux 默认安装到 `~/.local/bin`，均无需 root/管理员权限。
+
+**Q: macOS 上为什么写了 PATH 还是找不到 `claude`？**
+> macOS 终端通常启动登录 shell，`zsh` 更常读取 `~/.zprofile`，`bash` 更常读取 `~/.bash_profile`。安装脚本会优先写这些文件；安装后请重新打开终端，或执行 `source ~/.zprofile` / `source ~/.bash_profile`。
+
+**Q: fallback 安装和 `claude install` 有什么区别？**
+> `claude install` 成功时通常保留官方 shell integration 和自动更新能力；fallback 是直接复制二进制，优点是稳定、快，缺点是没有自动更新，需要重新运行安装脚本升级。
 
 **Q: Windows 上没有安装 Git 怎么办？**
 > 安装脚本会自动检测并静默安装 Git for Windows（优先从 npmmirror 下载，无需管理员权限），无需手动操作。

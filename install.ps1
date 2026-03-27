@@ -14,6 +14,8 @@
 
 # Default parameters (iex context does not support param() blocks)
 if (-not (Get-Variable 'NoVerify'   -ErrorAction SilentlyContinue)) { $NoVerify   = $false }
+if (-not $env:CLAUDE_INSTALL_TIMEOUT) { $env:CLAUDE_INSTALL_TIMEOUT = "25" }
+if (-not $env:CLAUDE_INSTALL_MODE)    { $env:CLAUDE_INSTALL_MODE    = "auto" }
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference    = "Stop"
@@ -59,6 +61,18 @@ function Exit-WithError {
 $global:SelectedMirror     = ""
 $global:GithubMirror       = ""   # fastest mirror (used for CC Switch / Git)
 $global:InstalledViaWinget = $false
+$global:InstallMethod      = ""
+$global:InstalledClaudeExe = ""
+
+function Test-AnthropicApiReachable {
+    try {
+        Invoke-WebRequest -Uri "https://api.anthropic.com" -Method Head `
+            -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        return ($_.Exception.Response -ne $null)
+    }
+}
 
 function Select-Mirror {
     param([string]$Version)
@@ -467,14 +481,7 @@ function Configure-ApiKey {
         return
     }
 
-    $canReach = $false
-    try {
-        Invoke-WebRequest -Uri "https://api.anthropic.com" -Method Head `
-            -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop | Out-Null
-        $canReach = $true
-    } catch {
-        if ($_.Exception.Response -ne $null) { $canReach = $true }
-    }
+    $canReach = Test-AnthropicApiReachable
 
     if ($CcSwitchInstalled) {
         Write-Info "CC Switch installed -> setting placeholder provider config..."
@@ -868,25 +875,44 @@ function Main {
 
         # 11. Run install; fall back to manual setup if it fails (e.g. CDN unreachable in China)
         Write-Step "Setting up Claude Code..."
-        Write-Info "Running claude install (may download additional components)..."
-        Write-Info "Please wait up to 90s -- if CDN is unreachable, manual fallback will be used."
+        $installTimeout = 25
+        [void][int]::TryParse($env:CLAUDE_INSTALL_TIMEOUT, [ref]$installTimeout)
+        if ($installTimeout -le 0) { $installTimeout = 25 }
 
-        $installJob = Start-Job -ScriptBlock {
-            param($b)
-            $OutputEncoding           = [System.Text.Encoding]::UTF8
-            [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-            & $b install 2>&1
-        } -ArgumentList $binaryPath
+        $installMode = "$env:CLAUDE_INSTALL_MODE".ToLowerInvariant()
+        if ($installMode -notin @("auto", "force", "skip")) { $installMode = "auto" }
 
-        $done = Wait-Job $installJob -Timeout 90
-        if ($done) {
-            @(Receive-Job $installJob -ErrorAction SilentlyContinue) |
-                ForEach-Object { if ($_) { Write-Host "  $_" } }
-            Remove-Job $installJob -Force -ErrorAction SilentlyContinue
-        } else {
-            Stop-Job  $installJob -ErrorAction SilentlyContinue
-            Remove-Job $installJob -Force -ErrorAction SilentlyContinue
-            Write-Warn "claude install timed out (90s). CDN may be unreachable -- switching to manual fallback."
+        $runClaudeInstall = $true
+        if ($installMode -eq "skip") {
+            $runClaudeInstall = $false
+            Write-Warn "CLAUDE_INSTALL_MODE=skip -- using manual fallback installation."
+        } elseif ($installMode -eq "auto" -and -not (Test-AnthropicApiReachable)) {
+            $runClaudeInstall = $false
+            Write-Warn "Anthropic API unreachable -- skipping 'claude install' and using manual fallback."
+        }
+
+        if ($runClaudeInstall) {
+            Write-Info "Running claude install (may download additional components)..."
+            Write-Info "Mode: $installMode"
+            Write-Info "Please wait up to ${installTimeout}s -- if it fails, manual fallback will be used."
+
+            $installJob = Start-Job -ScriptBlock {
+                param($b)
+                $OutputEncoding           = [System.Text.Encoding]::UTF8
+                [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+                & $b install 2>&1
+            } -ArgumentList $binaryPath
+
+            $done = Wait-Job $installJob -Timeout $installTimeout
+            if ($done) {
+                @(Receive-Job $installJob -ErrorAction SilentlyContinue) |
+                    ForEach-Object { if ($_) { Write-Host "  $_" } }
+                Remove-Job $installJob -Force -ErrorAction SilentlyContinue
+            } else {
+                Stop-Job  $installJob -ErrorAction SilentlyContinue
+                Remove-Job $installJob -Force -ErrorAction SilentlyContinue
+                Write-Warn "claude install timed out (${installTimeout}s). Switching to manual fallback."
+            }
         }
 
         # Unified PATH setup -- regardless of whether claude install succeeded or not
@@ -894,14 +920,16 @@ function Main {
         $localExe  = "$LOCAL_BIN\claude.exe"
         New-Item -ItemType Directory -Force -Path $LOCAL_BIN | Out-Null
 
-        if (Test-Path $localExe) {
-            # claude install placed the binary (with native build) -- keep it, just fix PATH
+        if ((Test-Path $localExe) -and (& $localExe --version 2>$null)) {
+            $global:InstallMethod = "official"
+            $global:InstalledClaudeExe = $localExe
             Write-Ok "Claude Code installed by claude install: $localExe"
         } else {
-            # claude install failed completely -- copy raw binary as fallback
             Write-Warn "claude install did not place binary, using downloaded binary as fallback."
             Copy-Item $binaryPath $localExe -Force
             Unblock-File -Path $localExe -ErrorAction SilentlyContinue
+            $global:InstallMethod = "fallback"
+            $global:InstalledClaudeExe = $localExe
             Write-Ok "Claude Code installed (fallback): $localExe"
         }
 
@@ -952,6 +980,17 @@ function Main {
     Write-Host ""
     Write-Output "[OK] Installation complete!"
     Write-Host ""
+    if ($global:InstallMethod -eq "official") {
+        Write-Host "  Install mode: official (via claude install, auto-update enabled)"
+    } elseif ($global:InstallMethod -eq "fallback") {
+        Write-Host "  Install mode: fallback (direct binary copy, no auto-update)"
+    }
+    if ($global:InstalledClaudeExe) {
+        Write-Host "  Binary: $global:InstalledClaudeExe"
+    }
+    if ($global:InstallMethod) {
+        Write-Host ""
+    }
     Write-Host "  Quick start:"
     Write-Host "    claude            -- start Claude Code"
     Write-Host "    claude --version  -- verify installation"

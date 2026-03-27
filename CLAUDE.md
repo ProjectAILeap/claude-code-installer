@@ -23,7 +23,7 @@ check_installed_version  # claude --version 检查是否已是最新
 check_git             # Linux 检查 Git 是否安装
 select_mirror         # 并发测速：GCS + 5 个 GitHub 镜像，按延迟排序
 download_and_verify   # 按 MIRROR_ORDER 顺序下载，manifest.json 校验
-run_claude_install    # 执行 claude install [TARGET]，90s 超时后降级
+run_claude_install    # 执行 claude install [TARGET]，支持 auto|force|skip，默认 25s 超时后降级
 install_cc_switch_prompt  # 可选：安装 CC Switch（API 提供商切换器）
 configure_api_key     # 配置 ANTHROPIC_API_KEY
 ```
@@ -46,7 +46,14 @@ configure_api_key     # 配置 ANTHROPIC_API_KEY
 ### claude install vs 降级安装
 
 - **正常路径**：`claude install [TARGET]` 完成安装，自动更新机制由此建立
-- **降级路径**（claude install 超时/失败）：直接 `cp` 二进制到 `~/.local/bin/claude`，无自动更新
+- **降级路径**（跳过 / 超时 / 失败）：直接 `cp` 二进制到 `~/.local/bin/claude`（或 macOS 的 `/usr/local/bin/claude`），无自动更新
+
+### 安装模式
+
+- `CLAUDE_INSTALL_MODE=auto`：默认。先探测 `api.anthropic.com`，可达时尝试 `claude install`，不可达时直接 fallback
+- `CLAUDE_INSTALL_MODE=force`：无论探测结果如何都强制尝试 `claude install`
+- `CLAUDE_INSTALL_MODE=skip`：跳过 `claude install`，直接 fallback
+- `CLAUDE_INSTALL_TIMEOUT`：默认 `25` 秒，可覆盖
 
 ## install.ps1 核心差异
 
@@ -55,7 +62,7 @@ configure_api_key     # 配置 ANTHROPIC_API_KEY
 - GCS 下载失败自动降级到 `$global:GithubMirror` + 多镜像 fallback
 - 校验使用 `manifest.json`（PowerShell 原生 JSON 解析），不用 sha256sums.txt
 - 可选 winget 安装路径（`winget install Anthropic.ClaudeCode`），成功后跳过镜像下载流程
-- 同样调用 `claude install`，90s 超时后降级（winget 路径除外）
+- 原生路径同样调用 `claude install`，支持 `auto|force|skip`，默认 25s 超时后降级（winget 路径除外）
 - 额外功能：自动安装 Git for Windows、CC Switch（MSI）、交互式 API Key 配置
 
 ### winget 安装说明
@@ -81,6 +88,8 @@ configure_api_key     # 配置 ANTHROPIC_API_KEY
 | CC Switch | 无 | 可选安装 |
 | API Key | 无 | 交互式配置 |
 | 自动更新 | 有（via claude install） | 正常路径有，降级路径无 |
+| 安装策略 | 固定官方路径 | `claude install` + 自动 fallback，支持 `CLAUDE_INSTALL_MODE` |
+| PATH 修复 | 官方脚本处理 | 成功/失败后都补 PATH；macOS 优先写 `~/.zprofile` / `~/.bash_profile` |
 
 ## 测试
 

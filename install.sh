@@ -27,9 +27,13 @@ DOWNLOAD_DIR="${HOME}/.claude/downloads"
 DATA_DIR="${HOME}/.local/share/claude-code"
 VERSION_FILE="${DATA_DIR}/version"
 CLAUDE_JSON="${HOME}/.claude.json"
+CLAUDE_INSTALL_TIMEOUT="${CLAUDE_INSTALL_TIMEOUT:-25}"
+CLAUDE_INSTALL_MODE="${CLAUDE_INSTALL_MODE:-auto}"
 CC_SWITCH_INSTALLED=false
 INSTALL_DIR=""      # set by detect_install_dir, used only in fallback
 CLAUDE_BIN=""       # full path to installed claude binary (may not be in PATH)
+INSTALL_METHOD=""   # "official" or "fallback"
+PATH_RC_FILE=""     # shell rc/profile file updated for PATH
 MIRROR_ORDER=()  # all reachable sources sorted by latency (GCS + GitHub)
 GITHUB_MIRROR="" # fastest GitHub mirror (CC Switch only)
 
@@ -60,6 +64,48 @@ _now_ms() {
     perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000' 2>/dev/null && return
     # Last resort: second precision only
     echo $(($(date +%s) * 1000))
+}
+
+can_reach_anthropic_api() {
+    if curl -sf --connect-timeout 3 --max-time 5 \
+        -o /dev/null "https://api.anthropic.com" 2>/dev/null; then
+        return 0
+    fi
+    if curl -sf --connect-timeout 3 --max-time 5 \
+        -o /dev/null -w "%{http_code}" "https://api.anthropic.com" 2>/dev/null | \
+        grep -qE '^[0-9]+'; then
+        return 0
+    fi
+    return 1
+}
+
+find_installed_claude() {
+    CLAUDE_BIN=""
+
+    if command -v claude &>/dev/null; then
+        CLAUDE_BIN="$(command -v claude)"
+        return 0
+    fi
+
+    local p
+    for p in "${HOME}/.local/bin/claude" "/usr/local/bin/claude"; do
+        if [[ -x "$p" ]]; then
+            CLAUDE_BIN="$p"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+verify_claude_install() {
+    if ! find_installed_claude; then
+        return 1
+    fi
+
+    local out=""
+    out="$("${CLAUDE_BIN}" --version 2>&1 || true)"
+    [[ "$out" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]
 }
 
 # ── Detect platform ───────────────────────────────────────────────────────
@@ -223,29 +269,14 @@ get_latest_version() {
 # ── Version check ─────────────────────────────────────────────────────────
 check_installed_version() {
     INSTALLED_VERSION=""
-    CLAUDE_BIN=""
+    find_installed_claude || true
 
     local out=""
-    if command -v claude &>/dev/null; then
-        out="$(claude --version 2>&1 || true)"
+    if [[ -n "$CLAUDE_BIN" ]]; then
+        out="$("${CLAUDE_BIN}" --version 2>&1 || true)"
         if [[ "$out" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
             INSTALLED_VERSION="${BASH_REMATCH[1]}"
         fi
-    fi
-
-    # If not found in PATH, check known install locations (e.g. PATH not yet updated)
-    if [[ -z "$INSTALLED_VERSION" ]]; then
-        local p
-        for p in "${HOME}/.local/bin/claude" "/usr/local/bin/claude"; do
-            if [[ -x "$p" ]]; then
-                out="$("$p" --version 2>&1 || true)"
-                if [[ "$out" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
-                    INSTALLED_VERSION="${BASH_REMATCH[1]}"
-                    CLAUDE_BIN="$p"
-                fi
-                break
-            fi
-        done
     fi
 }
 
@@ -402,8 +433,28 @@ _download_from_github() {
 # ── Run claude install (with fallback) ────────────────────────────────────
 run_claude_install() {
     step "Setting up Claude Code..."
+    if ! [[ "${CLAUDE_INSTALL_TIMEOUT}" =~ ^[0-9]+$ ]] || (( CLAUDE_INSTALL_TIMEOUT <= 0 )); then
+        CLAUDE_INSTALL_TIMEOUT=25
+    fi
+    if [[ ! "${CLAUDE_INSTALL_MODE}" =~ ^(auto|force|skip)$ ]]; then
+        CLAUDE_INSTALL_MODE="auto"
+    fi
+
+    if [[ "${CLAUDE_INSTALL_MODE}" == "skip" ]]; then
+        warn "CLAUDE_INSTALL_MODE=skip — using fallback installation."
+        fallback_install
+        return
+    fi
+
+    if [[ "${CLAUDE_INSTALL_MODE}" == "auto" ]] && ! can_reach_anthropic_api; then
+        warn "Anthropic API unreachable — skipping 'claude install' and using fallback installation."
+        fallback_install
+        return
+    fi
+
     info "Running: claude install${TARGET:+ $TARGET}"
-    info "This may download additional components — please wait up to 90s..."
+    info "Mode: ${CLAUDE_INSTALL_MODE}"
+    info "Waiting up to ${CLAUDE_INSTALL_TIMEOUT}s before fallback..."
 
     local install_ok=false
     local install_cmd=("${BINARY_FILE}" install)
@@ -411,20 +462,20 @@ run_claude_install() {
 
     if command -v timeout &>/dev/null; then
         # Linux: GNU coreutils timeout
-        if timeout 90 "${install_cmd[@]}"; then
+        if timeout "${CLAUDE_INSTALL_TIMEOUT}" "${install_cmd[@]}"; then
             install_ok=true
         fi
     elif command -v gtimeout &>/dev/null; then
         # macOS with coreutils installed via Homebrew
-        if gtimeout 90 "${install_cmd[@]}"; then
+        if gtimeout "${CLAUDE_INSTALL_TIMEOUT}" "${install_cmd[@]}"; then
             install_ok=true
         fi
     else
-        # macOS without coreutils: run in background and kill after 90s
+        # macOS without coreutils: run in background and kill after timeout
         "${install_cmd[@]}" &
         local pid=$!
         local i=0
-        while kill -0 "$pid" 2>/dev/null && (( i < 90 )); do
+        while kill -0 "$pid" 2>/dev/null && (( i < CLAUDE_INSTALL_TIMEOUT )); do
             sleep 1; (( i++ ))
         done
         if kill -0 "$pid" 2>/dev/null; then
@@ -435,8 +486,11 @@ run_claude_install() {
         fi
     fi
 
-    if $install_ok; then
-        ok "claude install completed."
+    if $install_ok && verify_claude_install; then
+        INSTALL_DIR="$(dirname "${CLAUDE_BIN}")"
+        INSTALL_METHOD="official"
+        ok "claude install completed: ${CLAUDE_BIN}"
+        setup_path
         return
     fi
 
@@ -460,10 +514,11 @@ fallback_install() {
     printf '%s\n' "${VERSION}" > "${VERSION_FILE}"
     ok "Installed (fallback): ${dest}"
 
+    CLAUDE_BIN="$dest"
+    INSTALL_METHOD="fallback"
     setup_path
 }
 
-# ── PATH setup (used only in fallback) ────────────────────────────────────
 setup_path() {
     if printf '%s\n' "${PATH//:/$'\n'}" | grep -qx "${INSTALL_DIR}"; then
         return
@@ -472,13 +527,21 @@ setup_path() {
     step "Adding ${INSTALL_DIR} to PATH..."
     local export_line="export PATH=\"${INSTALL_DIR}:\$PATH\""
     local added=false
+    local rc_files=("${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile")
 
-    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+    # macOS terminals commonly start login shells, which load ~/.zprofile or
+    # ~/.bash_profile instead of ~/.zshrc / ~/.bashrc.
+    if [[ "$(uname)" == "Darwin" ]]; then
+        rc_files=("${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile")
+    fi
+
+    for rc in "${rc_files[@]}"; do
         if [[ -f "$rc" ]] && ! grep -qF "${INSTALL_DIR}" "$rc"; then
             {
                 printf '\n# Added by claude-code-installer\n'
                 printf '%s\n' "$export_line"
             } >> "$rc"
+            [[ -z "${PATH_RC_FILE}" ]] && PATH_RC_FILE="$rc"
             info "  Updated: $rc"
             added=true
         fi
@@ -488,18 +551,32 @@ setup_path() {
     if ! $added; then
         local fallback_rc
         case "${SHELL:-}" in
-            */zsh)  fallback_rc="${HOME}/.zshrc"  ;;
+            */zsh)
+                if [[ "$(uname)" == "Darwin" ]]; then
+                    fallback_rc="${HOME}/.zprofile"
+                else
+                    fallback_rc="${HOME}/.zshrc"
+                fi
+                ;;
             */fish) fallback_rc="${HOME}/.config/fish/config.fish" ;;
-            *)      fallback_rc="${HOME}/.bashrc" ;;
+            *)
+                if [[ "$(uname)" == "Darwin" ]]; then
+                    fallback_rc="${HOME}/.bash_profile"
+                else
+                    fallback_rc="${HOME}/.bashrc"
+                fi
+                ;;
         esac
         {
             printf '\n# Added by claude-code-installer\n'
             printf '%s\n' "$export_line"
         } >> "$fallback_rc"
+        PATH_RC_FILE="$fallback_rc"
         info "  Created: $fallback_rc"
         added=true
     fi
 
+    export PATH="${INSTALL_DIR}:${PATH}"
     $added || warn "Add manually: ${export_line}"
 }
 
@@ -554,17 +631,16 @@ configure_api_key() {
     fi
 
     local can_reach=false
-    if curl -sf --connect-timeout 5 --max-time 5 \
-        -o /dev/null "https://api.anthropic.com" 2>/dev/null; then
-        can_reach=true
-    elif curl -sf --connect-timeout 5 --max-time 5 \
-        -o /dev/null -w "%{http_code}" "https://api.anthropic.com" 2>/dev/null | \
-        grep -qE '^[0-9]+'; then
+    if can_reach_anthropic_api; then
         can_reach=true
     fi
 
     local profile_files=()
-    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+    local rc_files=("${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile")
+    if [[ "$(uname)" == "Darwin" ]]; then
+        rc_files=("${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile")
+    fi
+    for rc in "${rc_files[@]}"; do
         [[ -f "$rc" ]] && profile_files+=("$rc")
     done
 
@@ -731,6 +807,15 @@ install_cc_switch_prompt() {
 print_done() {
     printf "\n"
     printf "${GREEN}${BOLD}  ✓ Claude Code v%s installed!${NC}\n\n" "${VERSION}"
+    if [[ "${INSTALL_METHOD}" == "official" ]]; then
+        printf "  Install mode: official (via ${BOLD}claude install${NC}, auto-update enabled)\n"
+    elif [[ "${INSTALL_METHOD}" == "fallback" ]]; then
+        printf "  Install mode: fallback (direct binary copy, no auto-update)\n"
+    fi
+    if [[ -n "${CLAUDE_BIN}" ]]; then
+        printf "  Binary: %s\n" "${CLAUDE_BIN}"
+    fi
+    printf "\n"
     printf "  Quick start:\n"
     printf "    ${BOLD}claude${NC}            — start Claude Code\n"
     printf "    ${BOLD}claude --version${NC}  — verify installation\n"
@@ -750,6 +835,13 @@ print_done() {
 
     if [[ -n "$INSTALL_DIR" ]] && ! printf '%s\n' "${PATH//:/$'\n'}" | grep -qx "${INSTALL_DIR}"; then
         printf "${YELLOW}  Restart your shell to use 'claude' command.${NC}\n\n"
+    elif [[ -n "$PATH_RC_FILE" ]]; then
+        if [[ "${BASH_SOURCE[0]:-$0}" != "${0}" ]]; then
+            printf "${GREEN}  PATH is active in this terminal because the script was sourced.${NC}\n\n"
+        else
+            printf "${YELLOW}  To use 'claude' in this terminal now, run:${NC}\n"
+            printf "    ${BOLD}source %s${NC}\n\n" "${PATH_RC_FILE}"
+        fi
     fi
 }
 
