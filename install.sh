@@ -140,13 +140,16 @@ select_mirror() {
         (
             local test_url
             if [[ "$m" == "$GCS_BUCKET" ]]; then
-                test_url="${m}/latest"
+                test_url="${m}/${VERSION}/manifest.json"
             else
-                test_url="${m}/${RELEASES_REPO}/releases"
+                # Test with actual release asset (~750 bytes) using GET —
+                # HEAD requests are often rejected by proxy mirrors.
+                # This tests the exact URL pattern used for binary downloads.
+                test_url="${m}/${RELEASES_REPO}/releases/download/v${VERSION}/sha256sums.txt"
             fi
             local t0 t1 ms
             t0="$(_now_ms)"
-            if curl -sI --connect-timeout 8 --max-time 10 "$test_url" &>/dev/null; then
+            if curl -sfL --connect-timeout 8 --max-time 10 -o /dev/null "$test_url" &>/dev/null; then
                 t1="$(_now_ms)"
                 ms=$((t1 - t0))
                 printf '%s\n' "$m" > "${result_dir}/$(printf '%06d' "$ms")_${RANDOM}"
@@ -351,7 +354,7 @@ _download_from_github() {
     local bin_file="$1" mirror="$2"
     local filename="claude-${VERSION}-${PLATFORM}"
     local dl_url="${mirror}/${RELEASES_REPO}/releases/download/v${VERSION}/${filename}"
-    local manifest_url="${mirror}/${RELEASES_REPO}/releases/download/v${VERSION}/manifest.json"
+    local manifest_url="${mirror}/${RELEASES_REPO}/releases/download/v${VERSION}/manifest-${VERSION}.json"
 
     info "Source: $(_mirror_label "$mirror")"
     info "URL: ${dl_url}"

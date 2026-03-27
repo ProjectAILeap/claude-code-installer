@@ -358,99 +358,100 @@ function Ensure-Git {
 
     Write-Info "Installing Git for Windows..."
 
-    $gitVer = $GIT_FALLBACK_VER
-    $gitTag = $GIT_FALLBACK_TAG
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
 
-    try {
-        $list = Invoke-RestMethod `
-            -Uri "https://registry.npmmirror.com/-/binary/git-for-windows/" `
-            -TimeoutSec 8 -ErrorAction Stop
-        $last = $list |
-            Where-Object { $_.name -match '^v\d+\.\d+\.\d+\.windows\.\d+/$' } |
-            Select-Object -Last 1
-        if ($last) {
-            $gitTag = $last.name.TrimEnd('/')
-            $gitVer = if ($gitTag -match '^v(\d+\.\d+\.\d+)\.windows\.([2-9]\d*)$') {
-                "$($Matches[1]).$($Matches[2])"
-            } else { $gitTag -replace '^v(\d+\.\d+\.\d+).*', '$1' }
-            Write-Info "  Version (npmmirror): $gitTag"
-        }
-    } catch {
-        Write-Info "  npmmirror unavailable, trying GitHub API..."
-        try {
-            $rel = Invoke-RestMethod `
-                -Uri "https://api.github.com/repos/$GIT_REPO/releases/latest" `
-                -TimeoutSec 8 -ErrorAction Stop
-            $gitTag = $rel.tag_name
-            $gitVer = if ($gitTag -match '^v(\d+\.\d+\.\d+)\.windows\.([2-9]\d*)$') {
-                "$($Matches[1]).$($Matches[2])"
-            } else { $gitTag -replace '^v(\d+\.\d+\.\d+).*', '$1' }
-            Write-Info "  Version (GitHub): $gitTag"
-        } catch {
-            Write-Info "  Using fallback: $gitTag"
-        }
-    }
-
-    $exeName = "Git-$gitVer-64-bit.exe"
-    $tmpExe  = "$env:TEMP\$exeName"
-
-    $gitUrls = @(
-        "https://npmmirror.com/mirrors/git-for-windows/$gitTag/$exeName",
-        (Get-DownloadUrl "/$GIT_REPO/releases/download/$gitTag/$exeName"),
-        "https://github.com/$GIT_REPO/releases/download/$gitTag/$exeName"
-    ) | Select-Object -Unique
-
-    $downloaded = $false
-    if (Test-Path $tmpExe) {
-        Write-Info "  Installer already cached: $exeName"
-        $downloaded = $true
-    } else {
-        foreach ($url in $gitUrls) {
-            if (Invoke-Download -Url $url -OutFile $tmpExe -Label "Git $gitVer") {
-                $downloaded = $true; break
-            }
-        }
-    }
-
-    if ($downloaded) {
-        Write-Info "  Installing Git silently..."
-        try {
-            # Admin: system-wide install (no /CURRENTUSER, no UAC needed since already elevated)
-            # Non-admin: per-user install (/CURRENTUSER avoids UAC, installs to %LOCALAPPDATA%)
-            # -NoNewWindow is only valid for console processes; Inno Setup is GUI, omit it.
-            $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-                [Security.Principal.WindowsBuiltInRole]::Administrator)
-            $gitArgs = if ($isAdmin) {
-                '/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"'
-            } else {
-                '/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /CURRENTUSER /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"'
-            }
-            $proc = Start-Process -FilePath $tmpExe `
-                -ArgumentList $gitArgs `
-                -Wait -PassThru -ErrorAction Stop
-            if ($proc.ExitCode -eq 0) {
-                Write-Ok "Git installed."
-            } else {
-                Write-Warn "Git installer exited with code $($proc.ExitCode)."
-            }
-        } catch {
-            Write-Warn "Failed to run Git installer: $($_.Exception.Message)"
-        }
-        Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue
-    } else {
-        $winget = Get-Command winget -ErrorAction SilentlyContinue
-        if ($winget) {
-            Write-Info "  Trying winget..."
+    # Non-admin: try winget first -- winget elevates via its own service, no UAC dialog.
+    # Admin: skip winget, go straight to exe (faster, no winget overhead).
+    $gitInstalledOk = $false
+    if (-not $isAdmin) {
+        $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+        if ($wingetCmd) {
+            Write-Info "  Trying winget (no UAC required)..."
             try {
                 & winget install -e --id Git.Git --source winget `
                     --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
                 Write-Ok "Git installed via winget."
-                $downloaded = $true
+                $gitInstalledOk = $true
             } catch {
-                Write-Warn "winget install failed: $($_.Exception.Message)"
+                Write-Warn "  winget failed: $($_.Exception.Message), falling back to installer..."
             }
         }
-        if (-not $downloaded) {
+    }
+
+    if (-not $gitInstalledOk) {
+        $gitVer = $GIT_FALLBACK_VER
+        $gitTag = $GIT_FALLBACK_TAG
+
+        try {
+            $list = Invoke-RestMethod `
+                -Uri "https://registry.npmmirror.com/-/binary/git-for-windows/" `
+                -TimeoutSec 8 -ErrorAction Stop
+            $last = $list |
+                Where-Object { $_.name -match '^v\d+\.\d+\.\d+\.windows\.\d+/$' } |
+                Select-Object -Last 1
+            if ($last) {
+                $gitTag = $last.name.TrimEnd('/')
+                $gitVer = if ($gitTag -match '^v(\d+\.\d+\.\d+)\.windows\.([2-9]\d*)$') {
+                    "$($Matches[1]).$($Matches[2])"
+                } else { $gitTag -replace '^v(\d+\.\d+\.\d+).*', '$1' }
+                Write-Info "  Version (npmmirror): $gitTag"
+            }
+        } catch {
+            Write-Info "  npmmirror unavailable, trying GitHub API..."
+            try {
+                $rel = Invoke-RestMethod `
+                    -Uri "https://api.github.com/repos/$GIT_REPO/releases/latest" `
+                    -TimeoutSec 8 -ErrorAction Stop
+                $gitTag = $rel.tag_name
+                $gitVer = if ($gitTag -match '^v(\d+\.\d+\.\d+)\.windows\.([2-9]\d*)$') {
+                    "$($Matches[1]).$($Matches[2])"
+                } else { $gitTag -replace '^v(\d+\.\d+\.\d+).*', '$1' }
+                Write-Info "  Version (GitHub): $gitTag"
+            } catch {
+                Write-Info "  Using fallback: $gitTag"
+            }
+        }
+
+        $exeName = "Git-$gitVer-64-bit.exe"
+        $tmpExe  = "$env:TEMP\$exeName"
+
+        $gitUrls = @(
+            "https://npmmirror.com/mirrors/git-for-windows/$gitTag/$exeName",
+            (Get-DownloadUrl "/$GIT_REPO/releases/download/$gitTag/$exeName"),
+            "https://github.com/$GIT_REPO/releases/download/$gitTag/$exeName"
+        ) | Select-Object -Unique
+
+        $downloaded = $false
+        if (Test-Path $tmpExe) {
+            Write-Info "  Installer already cached: $exeName"
+            $downloaded = $true
+        } else {
+            foreach ($url in $gitUrls) {
+                if (Invoke-Download -Url $url -OutFile $tmpExe -Label "Git $gitVer") {
+                    $downloaded = $true; break
+                }
+            }
+        }
+
+        if ($downloaded) {
+            Write-Info "  Installing Git silently..."
+            try {
+                # Admin: system-wide install, no UAC needed (already elevated)
+                # Non-admin: /CURRENTUSER installs to %LOCALAPPDATA%, may still show UAC on some Git versions
+                $gitArgs = if ($isAdmin) {
+                    '/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"'
+                } else {
+                    '/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /CURRENTUSER /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"'
+                }
+                $proc = Start-Process -FilePath $tmpExe -ArgumentList $gitArgs -Wait -PassThru -ErrorAction Stop
+                if ($proc.ExitCode -eq 0) { Write-Ok "Git installed." }
+                else { Write-Warn "Git installer exited with code $($proc.ExitCode)." }
+            } catch {
+                Write-Warn "Failed to run Git installer: $($_.Exception.Message)"
+            }
+            Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue
+        } else {
             Write-Warn "Could not install Git automatically."
             Write-Info "Download manually: https://git-scm.com/download/win"
             Write-Warn "Some Claude Code features may not work without Git."
