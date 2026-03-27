@@ -124,7 +124,8 @@ MIRRORS=(
     "https://ghfast.top/https://github.com"
     "https://gh-proxy.com/https://github.com"
     "https://mirror.ghproxy.com/https://github.com"
-    "https://kkgithub.com"
+    "https://ghproxy.net/https://github.com"
+    "https://hub.gitmirror.com/https://github.com"
 )
 
 _mirror_label() {
@@ -148,15 +149,10 @@ select_mirror() {
     local m
     for m in "${all_sources[@]}"; do
         (
-            local test_url
-            if [[ "$m" == "$GCS_BUCKET" ]]; then
-                test_url="${m}/${VERSION}/manifest.json"
-            else
-                # Test with actual release asset (~750 bytes) using GET —
-                # HEAD requests are often rejected by proxy mirrors.
-                # This tests the exact URL pattern used for binary downloads.
-                test_url="${m}/${RELEASES_REPO}/releases/download/v${VERSION}/sha256sums.txt"
-            fi
+            # Test with actual release asset (~750 bytes) using GET —
+            # HEAD requests are often rejected by proxy mirrors.
+            # This tests the exact URL pattern used for binary downloads.
+            local test_url="${m}/${RELEASES_REPO}/releases/download/v${VERSION}/sha256sums.txt"
             local t0 t1 ms
             t0="$(_now_ms)"
             if curl -sfL --connect-timeout 8 --max-time 10 -o /dev/null "$test_url" &>/dev/null; then

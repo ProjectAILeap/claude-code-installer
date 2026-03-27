@@ -38,7 +38,8 @@ $MIRRORS = @(
     "https://ghfast.top/https://github.com",
     "https://gh-proxy.com/https://github.com",
     "https://mirror.ghproxy.com/https://github.com",
-    "https://kkgithub.com"
+    "https://ghproxy.net/https://github.com",
+    "https://hub.gitmirror.com/https://github.com"
 )
 
 # -- Output --------------------------------------------------------------------
