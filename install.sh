@@ -141,8 +141,10 @@ select_mirror() {
     local result_dir
     result_dir="$(mktemp -d)"
 
-    # Launch concurrent probes for GCS + all GitHub mirrors
-    local all_sources=("$GCS_BUCKET" "${MIRRORS[@]}")
+    # Launch concurrent probes for GitHub mirrors only.
+    # GCS (storage.googleapis.com) is excluded: it responds fast to probes but
+    # actual binary downloads time out for users in China (site is blocked).
+    local all_sources=("${MIRRORS[@]}")
     local m
     for m in "${all_sources[@]}"; do
         (
