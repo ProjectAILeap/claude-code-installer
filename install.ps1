@@ -730,7 +730,20 @@ function Main {
     # 2. Platform (aligns with official: supports win32-arm64)
     $platform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "win32-arm64" } else { "win32-x64" }
 
-    # 2.5. Choose installation method (mirrors official claude.ai/install.ps1 prompt)
+    # 3. Version check (shared by both install methods)
+    $targetVersion   = Get-LatestVersion
+    $installedVersion = Get-InstalledVersion
+    if ($installedVersion -eq $targetVersion) {
+        Write-Ok "Claude Code v$targetVersion is already up to date."
+        exit 0
+    }
+    if ($installedVersion) {
+        Write-Info "Upgrading: v$installedVersion -> v$targetVersion"
+    } else {
+        Write-Info "Installing Claude Code v$targetVersion"
+    }
+
+    # 4. Choose installation method (mirrors official claude.ai/install.ps1 prompt)
     Write-Host ""
     Write-Host "Select installation method:" -ForegroundColor Cyan
     Write-Host "  [1] Native Install (Recommended) -- downloads official binary, sets up auto-update"
@@ -752,21 +765,6 @@ function Main {
     }
 
     if (-not $global:InstalledViaWinget) {
-        # 3. Resolve target version
-        $targetVersion = Get-LatestVersion
-
-        # 4. Check installed version via claude --version (aligns with official)
-        $installedVersion = Get-InstalledVersion
-        if ($installedVersion -eq $targetVersion) {
-            Write-Ok "Claude Code v$targetVersion is already up to date."
-            exit 0
-        }
-        if ($installedVersion) {
-            Write-Info "Upgrading: v$installedVersion -> v$targetVersion"
-        } else {
-            Write-Info "Installing Claude Code v$targetVersion"
-        }
-
         # 5. Select fastest mirror (GCS + GitHub mirrors)
         Select-Mirror -Version $targetVersion
     }
