@@ -625,8 +625,14 @@ function Install-CcSwitch {
 
 # -- Winget helpers ------------------------------------------------------------
 function Get-WingetExe {
+    # 1. Already in PATH
     $cmd = Get-Command winget -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
+    # 2. Standard AppX symlink location -- %LOCALAPPDATA%\Microsoft\WindowsApps is in User PATH
+    #    by default, so this path works in new terminals without any PATH modification.
+    $localLink = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\winget.exe"
+    if (Test-Path $localLink) { return $localLink }
+    # 3. Fallback: find via AppxPackage InstallLocation (protected dir, full path only)
     $pkg = Get-AppxPackage -Name Microsoft.DesktopAppInstaller -ErrorAction SilentlyContinue |
         Sort-Object Version -Descending | Select-Object -First 1
     if ($pkg) {
@@ -654,17 +660,19 @@ function Install-Winget {
         Add-AppxPackage -Path $appins
         Start-Sleep -Seconds 3
         Write-Ok "winget installed."
-        # Add winget's directory to both current session PATH and permanent User PATH
+        # Refresh PATH so winget is usable immediately in current session
         $wingetExeNow = Get-WingetExe
         if ($wingetExeNow) {
             $wingetDir = Split-Path $wingetExeNow
-            # Permanent User PATH (applies to all new terminals)
-            $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-            if ($null -eq $userPath) { $userPath = "" }
-            if ($userPath -notlike "*$wingetDir*") {
-                [Environment]::SetEnvironmentVariable("Path", "$userPath;$wingetDir", "User")
+            $localWindowsApps = Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps"
+            if ($wingetDir -ne $localWindowsApps) {
+                # Not the standard AppX symlink path -- add to User PATH and current session
+                $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+                if ($null -eq $userPath) { $userPath = "" }
+                if ($userPath -notlike "*$wingetDir*") {
+                    [Environment]::SetEnvironmentVariable("Path", "$userPath;$wingetDir", "User")
+                }
             }
-            # Current session PATH (applies immediately)
             if ($env:Path -notlike "*$wingetDir*") {
                 $env:Path = "$env:Path;$wingetDir"
             }
