@@ -14,7 +14,6 @@
 
 # Default parameters (iex context does not support param() blocks)
 if (-not (Get-Variable 'NoVerify'   -ErrorAction SilentlyContinue)) { $NoVerify   = $false }
-if (-not (Get-Variable 'UseWinget'  -ErrorAction SilentlyContinue)) { $UseWinget  = $false }
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference    = "Stop"
@@ -685,29 +684,24 @@ function Main {
     # 2. Platform (aligns with official: supports win32-arm64)
     $platform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "win32-arm64" } else { "win32-x64" }
 
-    # 2.5. Optional: winget path (enabled via $UseWinget = $true before iex, or -UseWinget flag)
-    if ($UseWinget) {
-        Write-Host ""
+    # 2.5. Choose installation method (mirrors official claude.ai/install.ps1 prompt)
+    Write-Host ""
+    Write-Host "Select installation method:" -ForegroundColor Cyan
+    Write-Host "  [1] Native Install (Recommended) -- downloads official binary, sets up auto-update"
+    Write-Host "  [2] winget                        -- uses Windows Package Manager"
+    Write-Host ""
+    $methodChoice = Read-Host "Enter choice [1]"
+    if ($methodChoice -eq "2") {
         $wingetExe = Get-WingetExe
         if (-not $wingetExe) {
-            Write-Warn "winget not found on this system."
-            $ans = Read-Host "  Install winget (Windows Package Manager) first? [y/N]"
-            if ($ans -match '^[Yy]') {
-                Install-Winget
-                $wingetExe = Get-WingetExe
-                if (-not $wingetExe) {
-                    Write-Warn "winget still not available, falling back to mirror download."
-                }
-            }
-        } else {
-            Write-Info "winget available: $wingetExe"
+            Write-Info "winget not found, installing it automatically..."
+            Install-Winget
+            $wingetExe = Get-WingetExe
         }
-
         if ($wingetExe) {
-            $ans = Read-Host "  Install Claude Code via winget? [y/N]"
-            if ($ans -match '^[Yy]') {
-                Install-ViaWinget
-            }
+            Install-ViaWinget
+        } else {
+            Write-Warn "winget is not available on this system, falling back to Native Install."
         }
     }
 
