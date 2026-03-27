@@ -96,14 +96,17 @@ function Select-Mirror {
     $rawResults = foreach ($m in $tasks.Keys) {
         $task = $tasks[$m]
         $remaining = [int][math]::Max(0, ($deadline - [System.DateTime]::UtcNow).TotalMilliseconds)
-        $completed = $task.Wait($remaining)
+        # .Wait() throws AggregateException when task is cancelled or faulted
+        $completed = $false
+        try { $completed = $task.Wait($remaining) } catch {}
         $sw[$m].Stop()
         $ms = $sw[$m].ElapsedMilliseconds
-        $ok = $completed -and -not $task.IsFaulted -and -not $task.IsCanceled -and
-              ($task.Result.IsSuccessStatusCode -or
-               [int]$task.Result.StatusCode -lt 500)
-        if ($completed -and -not $task.IsFaulted -and -not $task.IsCanceled) {
-            try { $task.Result.Dispose() } catch {}
+        $ok = $false
+        if ($completed -and $task.Status -eq 'RanToCompletion') {
+            try {
+                $ok = $task.Result.IsSuccessStatusCode -or [int]$task.Result.StatusCode -lt 500
+                $task.Result.Dispose()
+            } catch {}
         }
         [PSCustomObject]@{ Mirror = $m; Ms = $ms; Ok = $ok }
     }
