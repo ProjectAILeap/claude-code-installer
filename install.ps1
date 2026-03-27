@@ -361,15 +361,21 @@ function Ensure-Git {
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 
-    # Non-admin: try winget first -- winget elevates via its own service, no UAC dialog.
-    # Admin: skip winget, go straight to exe (faster, no winget overhead).
+    # Non-admin: use winget to avoid UAC dialog (winget installs via its own elevated service).
+    # If winget is missing, install it first, then use it for Git.
+    # Admin: skip winget, go straight to exe (already elevated, no UAC).
     $gitInstalledOk = $false
     if (-not $isAdmin) {
-        $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
-        if ($wingetCmd) {
-            Write-Info "  Trying winget (no UAC required)..."
+        $wingetExe = Get-WingetExe
+        if (-not $wingetExe) {
+            Write-Info "  winget not found, installing it first (no UAC required)..."
+            Install-Winget
+            $wingetExe = Get-WingetExe
+        }
+        if ($wingetExe) {
+            Write-Info "  Installing Git via winget (no UAC required)..."
             try {
-                & winget install -e --id Git.Git --source winget `
+                & $wingetExe install -e --id Git.Git --source winget `
                     --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
                 Write-Ok "Git installed via winget."
                 $gitInstalledOk = $true
