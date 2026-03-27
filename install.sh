@@ -458,15 +458,14 @@ setup_path() {
         fi
     done
 
-    # Fallback: if no rc file exists yet, create the appropriate one.
-    # macOS (zsh default) may not have ~/.zshrc; Linux typically has ~/.bashrc.
+    # Fallback: if no rc file exists yet, create one matching the current shell.
     if ! $added; then
         local fallback_rc
-        if [[ "$(uname)" == "Darwin" ]]; then
-            fallback_rc="${HOME}/.zshrc"
-        else
-            fallback_rc="${HOME}/.bashrc"
-        fi
+        case "${SHELL:-}" in
+            */zsh)  fallback_rc="${HOME}/.zshrc"  ;;
+            */fish) fallback_rc="${HOME}/.config/fish/config.fish" ;;
+            *)      fallback_rc="${HOME}/.bashrc" ;;
+        esac
         {
             printf '\n# Added by claude-code-installer\n'
             printf '%s\n' "$export_line"
