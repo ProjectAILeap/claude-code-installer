@@ -174,69 +174,6 @@ function Main {
         $isWinget = ($wingetList -match "Anthropic\.ClaudeCode")
     }
 
-    if ($isWinget) {
-        Write-Step "Detected winget installation"
-        Write-Info "Claude Code was installed via winget."
-        Write-Host ""
-
-        $removeWinget = Ask-YesNo "Remove Claude Code (winget uninstall)?"
-        $removeConfig = $false
-        $removeCcSwitch = $false
-        $removeAnthropicEnv = $false
-        $removeGit = $false
-
-        if ((Test-Path $CLAUDE_CONFIG_DIR) -or (Test-Path $CLAUDE_CONFIG_FILE)) {
-            $removeConfig = Ask-YesNo "Remove Claude configuration (~\.claude\ and ~\.claude.json)?"
-        }
-        $ccEntry = Find-CcSwitch
-        if ($ccEntry) {
-            $removeCcSwitch = Ask-YesNo "Remove CC Switch ($($ccEntry.DisplayName) v$($ccEntry.DisplayVersion))?"
-        }
-        $anthropicKeys = @("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL") |
-            Where-Object { $null -ne [Environment]::GetEnvironmentVariable($_, "User") }
-        if ($anthropicKeys) {
-            $removeAnthropicEnv = Ask-YesNo "Remove ANTHROPIC_* variables from user environment ($($anthropicKeys -join ', '))?"
-        }
-        $gitEntry = Find-Git
-        if ($gitEntry) {
-            $removeGit = Ask-YesNo "Remove Git for Windows ($($gitEntry.DisplayName))? [default: No]"
-        }
-
-        if (-not ($removeWinget -or $removeConfig -or $removeCcSwitch -or $removeAnthropicEnv -or $removeGit)) {
-            Write-Host "`nNothing selected. Exiting."
-            exit 0
-        }
-
-        Write-Host ""
-        Write-Host "The following will be removed:" -ForegroundColor Yellow
-        if ($removeWinget)       { Write-Host "  - Claude Code (via winget)" }
-        if ($removeConfig)       { Write-Host "  - Config:    $CLAUDE_CONFIG_DIR  +  $CLAUDE_CONFIG_FILE" }
-        if ($removeCcSwitch)     { Write-Host "  - CC Switch" }
-        if ($removeAnthropicEnv) { Write-Host "  - ANTHROPIC_* user environment variables" }
-        if ($removeGit)          { Write-Host "  - Git for Windows ($($gitEntry.DisplayName))" }
-        Write-Host ""
-
-        if (-not (Ask-YesNo "Proceed?")) {
-            Write-Host "`nCancelled."
-            exit 0
-        }
-
-        Write-Step "Removing..."
-        if ($removeWinget)       { Uninstall-ViaWinget -WingetExe $wingetExe }
-        if ($removeConfig) {
-            if (Test-Path $CLAUDE_CONFIG_DIR)  { Remove-Item $CLAUDE_CONFIG_DIR  -Recurse -Force; Write-Ok "Removed: $CLAUDE_CONFIG_DIR" }
-            if (Test-Path $CLAUDE_CONFIG_FILE) { Remove-Item $CLAUDE_CONFIG_FILE -Force;          Write-Ok "Removed: $CLAUDE_CONFIG_FILE" }
-        }
-        if ($removeCcSwitch -and $ccEntry) { Uninstall-CcSwitch -CcEntry $ccEntry }
-        if ($removeAnthropicEnv)           { Remove-AnthropicEnv }
-        if ($removeGit -and $gitEntry)     { Uninstall-Git -GitEntry $gitEntry }
-
-        Write-Host ""
-        Write-Host "  Uninstall complete." -ForegroundColor Green
-        Write-Host ""
-        exit 0
-    }
-
     # Detect native install location; also check Get-Command, but only if in a user-writable directory
     # (avoids touching system shims in C:\Windows\system32 left by npm or other tools)
     $foundExes = @()
@@ -252,7 +189,7 @@ function Main {
         }
     }
 
-    $hasInstall = $foundExes.Count -gt 0
+    $hasInstall = $isWinget -or ($foundExes.Count -gt 0)
     if (-not $hasInstall) {
         Write-Warn "Claude Code does not appear to be installed."
         Write-Info "Nothing to remove."
@@ -277,6 +214,7 @@ function Main {
         Where-Object { $null -ne [Environment]::GetEnvironmentVariable($_, "User") }
 
     Write-Step "Detected installation"
+    if ($isWinget)         { Write-Info "winget:   Claude Code (Anthropic.ClaudeCode)" }
     if ($installedVersion) { Write-Info "Version:  v$installedVersion" }
     foreach ($exe in $foundExes) { Write-Info "Binary:   $exe" }
     if (Test-Path $DOWNLOAD_CACHE) { Write-Info "Cache:    $DOWNLOAD_CACHE" }
@@ -286,6 +224,7 @@ function Main {
     Write-Host ""
 
     # Collect choices
+    $removeWinget      = $false
     $removeBinaries    = @()
     $removeDirs        = @()
     $removePathDirs    = @()
@@ -294,6 +233,10 @@ function Main {
     $removeCcSwitch    = $false
     $removeAnthropicEnv = $false
     $removeGit         = $false
+
+    if ($isWinget) {
+        $removeWinget = Ask-YesNo "Remove Claude Code (winget)?"
+    }
 
     foreach ($exe in $foundExes) {
         if (Ask-YesNo "Remove Claude Code binary ($exe)?") {
@@ -329,7 +272,7 @@ function Main {
     }
 
     # Check anything selected
-    $anySelected = ($removeBinaries.Count -gt 0) -or $removeCache -or $removeConfig `
+    $anySelected = $removeWinget -or ($removeBinaries.Count -gt 0) -or $removeCache -or $removeConfig `
                    -or $removeCcSwitch -or $removeAnthropicEnv -or $removeGit
     if (-not $anySelected) {
         Write-Host "`nNothing selected. Exiting."
@@ -339,6 +282,7 @@ function Main {
     # Summary
     Write-Host ""
     Write-Host "The following will be removed:" -ForegroundColor Yellow
+    if ($removeWinget)                 { Write-Host "  - Claude Code (winget)" }
     foreach ($exe in $removeBinaries)  { Write-Host "  - Binary:    $exe" }
     foreach ($dir in $removeDirs)      { Write-Host "  - Directory: $dir" }
     foreach ($dir in $removePathDirs)  { Write-Host "  - PATH entry: $dir" }
@@ -355,6 +299,8 @@ function Main {
     }
 
     Write-Step "Removing..."
+
+    if ($removeWinget) { Uninstall-ViaWinget -WingetExe $wingetExe }
 
     foreach ($exe in $removeBinaries) {
         if (Test-Path $exe) {
