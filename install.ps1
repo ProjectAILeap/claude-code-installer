@@ -360,44 +360,9 @@ function Ensure-Git {
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)
 
-    # Non-admin: use winget to avoid UAC dialog (winget installs via its own elevated service).
-    # If winget is missing, install it first, then use it for Git.
-    # Admin: skip winget, go straight to exe (already elevated, no UAC).
-    $gitInstalledOk = $false
-    if (-not $isAdmin) {
-        $wingetExe = Get-WingetExe
-        if (-not $wingetExe) {
-            Write-Info "  winget not found, installing it first (no UAC required)..."
-            Install-Winget
-            $wingetExe = Get-WingetExe
-        }
-        if ($wingetExe) {
-            Ensure-WingetAlias -WingetExe $wingetExe
-            Write-Info "  Installing Git via winget (no UAC required, timeout 60s)..."
-            try {
-                $proc = Start-Process -FilePath $wingetExe `
-                    -ArgumentList "install -e --id Git.Git --source winget --accept-source-agreements --accept-package-agreements" `
-                    -PassThru -NoNewWindow -ErrorAction Stop
-                $finished = $proc.WaitForExit(60000)
-                if ($finished -and $proc.ExitCode -eq 0) {
-                    Write-Ok "Git installed via winget."
-                    $gitInstalledOk = $true
-                } else {
-                    if (-not $finished) {
-                        try { $proc.Kill() } catch {}
-                        Write-Warn "  winget timed out (60s), falling back to npmmirror installer..."
-                    } else {
-                        Write-Warn "  winget failed (exit $($proc.ExitCode)), falling back to npmmirror installer..."
-                    }
-                }
-            } catch {
-                Write-Warn "  winget failed: $($_.Exception.Message), falling back to installer..."
-            }
-        }
-    }
-
-    if (-not $gitInstalledOk) {
-        $gitVer = $GIT_FALLBACK_VER
+    # Use npmmirror installer directly (fast for China users, no UAC with /CURRENTUSER for non-admin).
+    # winget downloads Git from GitHub which is slow/blocked in China -- not worth the 60s wait.
+    $gitVer = $GIT_FALLBACK_VER
         $gitTag = $GIT_FALLBACK_TAG
 
         try {
@@ -474,7 +439,6 @@ function Ensure-Git {
             Write-Warn "Some Claude Code features may not work without Git."
             return
         }
-    }
 
     # Refresh PATH so git is available in current session
     $machine = [Environment]::GetEnvironmentVariable("Path", "Machine"); if ($null -eq $machine) { $machine = "" }
