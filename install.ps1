@@ -372,12 +372,24 @@ function Ensure-Git {
             $wingetExe = Get-WingetExe
         }
         if ($wingetExe) {
-            Write-Info "  Installing Git via winget (no UAC required)..."
+            Write-Info "  Installing Git via winget (no UAC required, timeout 60s)..."
             try {
-                & $wingetExe install -e --id Git.Git --source winget `
-                    --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
-                Write-Ok "Git installed via winget."
-                $gitInstalledOk = $true
+                $gitJob = Start-Job -ScriptBlock {
+                    param($exe)
+                    & $exe install -e --id Git.Git --source winget `
+                        --accept-source-agreements --accept-package-agreements 2>&1
+                } -ArgumentList $wingetExe
+                $done = Wait-Job $gitJob -Timeout 60
+                if ($done -and $gitJob.State -eq 'Completed') {
+                    $exitCode = Receive-Job $gitJob -ErrorAction SilentlyContinue | Select-Object -Last 1
+                    Remove-Job $gitJob -Force -ErrorAction SilentlyContinue
+                    Write-Ok "Git installed via winget."
+                    $gitInstalledOk = $true
+                } else {
+                    Stop-Job  $gitJob -ErrorAction SilentlyContinue
+                    Remove-Job $gitJob -Force -ErrorAction SilentlyContinue
+                    Write-Warn "  winget timed out (60s), falling back to npmmirror installer..."
+                }
             } catch {
                 Write-Warn "  winget failed: $($_.Exception.Message), falling back to installer..."
             }
