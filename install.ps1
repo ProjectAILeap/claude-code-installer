@@ -66,41 +66,47 @@ function Select-Mirror {
 
     Write-Step "Testing mirror speeds (GCS + GitHub mirrors)..."
 
-    $allSources = @($GCS_BUCKET) + $MIRRORS
-    $jobs = @()
-    foreach ($m in $allSources) {
-        # Build test URL using a real, tiny release asset (~750 bytes).
-        # This tests the exact same URL pattern as actual binary downloads,
-        # so a successful test guarantees the mirror works for real downloads.
-        if ($m -eq $GCS_BUCKET) {
-            $url = "$GCS_BUCKET/$Version/manifest.json"
-        } else {
-            $url = "$m/$RELEASES_REPO/releases/download/v$Version/sha256sums.txt"
-        }
+    # Use HttpClient async tasks (in-process, no Start-Job overhead).
+    # ResponseHeadersRead = stop as soon as headers arrive, don't download body.
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $handler.AllowAutoRedirect = $true
+    $client  = [System.Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [System.TimeSpan]::FromSeconds(20)
 
-        $jobs += Start-Job -ScriptBlock {
-            param($mirror, $u)
-            $ProgressPreference = 'SilentlyContinue'
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            try {
-                # Use GET instead of HEAD -- proxy mirrors often reject HEAD requests
-                # but handle GET fine.  The test file is tiny (<1 KB) so this is fast.
-                Invoke-WebRequest -Uri $u -TimeoutSec 15 -UseBasicParsing -ErrorAction Stop | Out-Null
-                $sw.Stop()
-                [PSCustomObject]@{ Mirror = $mirror; Ms = $sw.ElapsedMilliseconds; Ok = $true }
-            } catch {
-                $sw.Stop()
-                [PSCustomObject]@{ Mirror = $mirror; Ms = 99999; Ok = $false }
-            }
-        } -ArgumentList $m, $url
+    $allSources = @($GCS_BUCKET) + $MIRRORS
+    $tasks = [ordered]@{}
+    $sw    = [ordered]@{}
+
+    foreach ($m in $allSources) {
+        $url = if ($m -eq $GCS_BUCKET) {
+            "$GCS_BUCKET/$Version/manifest.json"
+        } else {
+            "$m/$RELEASES_REPO/releases/download/v$Version/sha256sums.txt"
+        }
+        $cts = [System.Threading.CancellationTokenSource]::new(15000)  # 15s per mirror
+        $sw[$m]    = [System.Diagnostics.Stopwatch]::StartNew()
+        $tasks[$m] = $client.GetAsync($url,
+            [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead,
+            $cts.Token)
     }
 
-    $jobs | Wait-Job -Timeout 18 | Out-Null
-    $allResults = @($jobs | ForEach-Object {
-        if ($_.State -eq 'Completed') { Receive-Job $_ -ErrorAction SilentlyContinue }
-        else { [PSCustomObject]@{ Mirror = ""; Ms = 99999; Ok = $false } }
-    } | Where-Object { $_ -and $_.Mirror } | Sort-Object @{Expression='Ok';Descending=$true}, Ms)
-    $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+    # Collect results: wait up to 18s total for all tasks
+    $deadline = [System.DateTime]::UtcNow.AddSeconds(18)
+    $allResults = @(foreach ($m in $tasks.Keys) {
+        $task = $tasks[$m]
+        $remaining = [int][math]::Max(0, ($deadline - [System.DateTime]::UtcNow).TotalMilliseconds)
+        $completed = $task.Wait($remaining)
+        $sw[$m].Stop()
+        $ms = $sw[$m].ElapsedMilliseconds
+        $ok = $completed -and -not $task.IsFaulted -and -not $task.IsCanceled -and
+              ($task.Result.IsSuccessStatusCode -or
+               [int]$task.Result.StatusCode -lt 500)
+        if ($completed -and -not $task.IsFaulted -and -not $task.IsCanceled) {
+            try { $task.Result.Dispose() } catch {}
+        }
+        [PSCustomObject]@{ Mirror = $m; Ms = $ms; Ok = $ok }
+    } | Sort-Object @{Expression='Ok';Descending=$true}, Ms)
+    $client.Dispose()
 
     $reachable = @($allResults | Where-Object { $_.Ok })
 
