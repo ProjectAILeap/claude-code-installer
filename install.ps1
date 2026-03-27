@@ -689,11 +689,18 @@ function Install-Winget {
 # -- Optional: winget install path ---------------------------------------------
 function Install-ViaWinget {
     param([string]$WingetExe = "winget")
-    Write-Step "Installing Claude Code via winget..."
+    Write-Step "Installing Claude Code via winget (timeout 120s)..."
     try {
         $proc = Start-Process $WingetExe `
             -ArgumentList "install -e --id Anthropic.ClaudeCode --source winget --accept-source-agreements --accept-package-agreements --silent" `
-            -Wait -PassThru -ErrorAction Stop
+            -PassThru -NoNewWindow -ErrorAction Stop
+        $finished = $proc.WaitForExit(120000)
+        if (-not $finished) {
+            try { $proc.Kill() } catch {}
+            Write-Warn "winget timed out (120s), falling back to mirror download..."
+            $global:InstalledViaWinget = $false
+            return
+        }
         # 0 = success; -1978335189 (0x8A150B2B) = no applicable upgrade (already up to date)
         $alreadyUpToDate = ($proc.ExitCode -eq -1978335189)
         if ($proc.ExitCode -eq 0 -or $alreadyUpToDate) {
