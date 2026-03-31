@@ -20,6 +20,7 @@ $CLAUDE_EXE        = "$LOCAL_BIN\claude.exe"
 $DOWNLOAD_CACHE    = "$env:USERPROFILE\.claude\downloads"
 $CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude"
 $CLAUDE_CONFIG_FILE = "$env:USERPROFILE\.claude.json"
+$NPM_PATH_MARKER   = "$env:USERPROFILE\.claude\npm-path-added"
 
 function Write-Step { param($msg) Write-Host "`n>> $msg" -ForegroundColor Cyan }
 function Write-Ok   { param($msg) Write-Host "  [ OK ]  $msg" -ForegroundColor Green }
@@ -174,22 +175,36 @@ function Main {
         $isWinget = ($wingetList -match "Anthropic\.ClaudeCode")
     }
 
-    # Detect native install location; also check Get-Command, but only if in a user-writable directory
-    # (avoids touching system shims in C:\Windows\system32 left by npm or other tools)
+    # Detect npm-managed installation (%APPDATA%\npm\claude.cmd placed by npm install -g)
+    $isNpmInstall = $false
+    $npmBin = "$env:APPDATA\npm"
+    if (Test-Path "$npmBin\claude.cmd") { $isNpmInstall = $true }
+    if (-not $isNpmInstall -and (Get-Command npm -ErrorAction SilentlyContinue)) {
+        try {
+            $npmPrefix = (& npm config get prefix 2>$null).Trim()
+            if ($npmPrefix -and (Test-Path "$npmPrefix\claude.cmd")) { $isNpmInstall = $true; $npmBin = $npmPrefix }
+        } catch {}
+    }
+
+    # Detect native install location; also check Get-Command, but only if in a user-writable
+    # directory that is NOT the npm bin dir (npm installs are handled separately above).
     $foundExes = @()
     if (Test-Path $CLAUDE_EXE) { $foundExes += $CLAUDE_EXE }
     $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
     if ($claudeCmd) {
         $src = $claudeCmd.Source
+        $isNpmPath  = $src -like "$env:APPDATA\npm\*"
         $isUserPath = $src -like "$env:USERPROFILE\*" -or $src -like "$env:LOCALAPPDATA\*" -or $src -like "$env:APPDATA\*"
-        if ($isUserPath -and ($foundExes -notcontains $src)) {
+        if ($isNpmPath) {
+            # Handled by the npm section — do not add to foundExes
+        } elseif ($isUserPath -and ($foundExes -notcontains $src)) {
             $foundExes += $src
         } elseif (-not $isUserPath) {
-            Write-Info "Note: claude also found at $src (system/npm path, not managed here -- skipping)"
+            Write-Info "Note: claude also found at $src (system path, not managed here -- skipping)"
         }
     }
 
-    $hasInstall = $isWinget -or ($foundExes.Count -gt 0)
+    $hasInstall = $isWinget -or $isNpmInstall -or ($foundExes.Count -gt 0)
     if (-not $hasInstall) {
         Write-Warn "Claude Code does not appear to be installed."
         Write-Info "Nothing to remove."
@@ -215,6 +230,7 @@ function Main {
 
     Write-Step "Detected installation"
     if ($isWinget)         { Write-Info "winget:   Claude Code (Anthropic.ClaudeCode)" }
+    if ($isNpmInstall)     { Write-Info "npm:      @anthropic-ai/claude-code (global, $npmBin)" }
     if ($installedVersion) { Write-Info "Version:  v$installedVersion" }
     foreach ($exe in $foundExes) { Write-Info "Binary:   $exe" }
     if (Test-Path $DOWNLOAD_CACHE) { Write-Info "Cache:    $DOWNLOAD_CACHE" }
@@ -225,6 +241,7 @@ function Main {
 
     # Collect choices
     $removeWinget      = $false
+    $removeNpm         = $false
     $removeBinaries    = @()
     $removeDirs        = @()
     $removePathDirs    = @()
@@ -236,6 +253,10 @@ function Main {
 
     if ($isWinget) {
         $removeWinget = Ask-YesNo "Remove Claude Code (winget)?"
+    }
+
+    if ($isNpmInstall) {
+        $removeNpm = Ask-YesNo "Uninstall Claude Code (npm global, @anthropic-ai/claude-code)?"
     }
 
     foreach ($exe in $foundExes) {
@@ -272,7 +293,7 @@ function Main {
     }
 
     # Check anything selected
-    $anySelected = $removeWinget -or ($removeBinaries.Count -gt 0) -or $removeCache -or $removeConfig `
+    $anySelected = $removeWinget -or $removeNpm -or ($removeBinaries.Count -gt 0) -or $removeCache -or $removeConfig `
                    -or $removeCcSwitch -or $removeAnthropicEnv -or $removeGit
     if (-not $anySelected) {
         Write-Host "`nNothing selected. Exiting."
@@ -283,6 +304,7 @@ function Main {
     Write-Host ""
     Write-Host "The following will be removed:" -ForegroundColor Yellow
     if ($removeWinget)                 { Write-Host "  - Claude Code (winget)" }
+    if ($removeNpm)                    { Write-Host "  - Claude Code (npm global, @anthropic-ai/claude-code)" }
     foreach ($exe in $removeBinaries)  { Write-Host "  - Binary:    $exe" }
     foreach ($dir in $removeDirs)      { Write-Host "  - Directory: $dir" }
     foreach ($dir in $removePathDirs)  { Write-Host "  - PATH entry: $dir" }
@@ -301,6 +323,36 @@ function Main {
     Write-Step "Removing..."
 
     if ($removeWinget) { Uninstall-ViaWinget -WingetExe $wingetExe }
+
+    if ($removeNpm) {
+        $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+        if ($npmCmd) {
+            Write-Info "Running: npm uninstall -g @anthropic-ai/claude-code"
+            try {
+                & $npmCmd.Source uninstall -g "@anthropic-ai/claude-code" 2>&1 | ForEach-Object { Write-Info "  $_" }
+                Write-Ok "npm: @anthropic-ai/claude-code uninstalled."
+            } catch {
+                Write-Warn "npm uninstall failed: $($_.Exception.Message)"
+            }
+        } else {
+            Write-Warn "npm not found. Uninstall manually: npm uninstall -g @anthropic-ai/claude-code"
+        }
+        # Restore claude.ps1 shim if we previously disabled it
+        $disabledShim = "$npmBin\claude.ps1.disabled"
+        $shimPs1      = "$npmBin\claude.ps1"
+        if ((Test-Path $disabledShim) -and -not (Test-Path $shimPs1)) {
+            Rename-Item $disabledShim $shimPs1 -ErrorAction SilentlyContinue
+            Write-Info "Restored $npmBin\claude.ps1"
+        }
+        # Remove npm bin from user PATH if it was added by our installer
+        $upNow = [Environment]::GetEnvironmentVariable("Path", "User")
+        if ((Test-Path $NPM_PATH_MARKER) -and $null -ne $upNow -and $upNow.Contains($npmBin)) {
+            Remove-FromUserPath $npmBin
+            Remove-Item $NPM_PATH_MARKER -Force -ErrorAction SilentlyContinue
+        } elseif ($null -ne $upNow -and $upNow.Contains($npmBin)) {
+            Write-Info "Skipping PATH cleanup for $npmBin (no installer marker found)."
+        }
+    }
 
     foreach ($exe in $removeBinaries) {
         if (Test-Path $exe) {

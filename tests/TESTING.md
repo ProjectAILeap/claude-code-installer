@@ -14,12 +14,12 @@
 | 层 | 名称 | 是否需要网络 | 是否需要 Docker |
 |----|------|:---:|:---:|
 | 1 | shellcheck 语法检查 | — | — |
-| 2 | 函数级单测（source install.sh） | — | — |
-| 3 | 下载逻辑模拟（GCS 失败降级） | — | — |
+| 2 | 函数级单测（source install.sh） | ✅ | — |
+| 3 | 逻辑模拟（GCS 降级 + npm 安装） | — | — |
 | 4 | 目标参数合法性检查 | — | — |
 | 5 | Docker 集成测试（Ubuntu + Alpine） | ✅ | ✅ |
 | 6 | 升级检测测试（Docker Ubuntu） | ✅ | ✅ |
-| 7 | 卸载测试（Docker Ubuntu） | ✅ | ✅ |
+| 7 | 卸载测试（Docker Ubuntu，含 npm 卸载） | ✅ | ✅ |
 
 ```bash
 # 全部层（在仓库根目录运行）
@@ -33,6 +33,11 @@ docker pull ubuntu:24.04
 docker pull alpine:latest
 bash tests/test.sh 5 6 7
 ```
+
+`test.sh` 当前覆盖点：
+- 第 2 层：`detect_platform`、`get_latest_version`、`check_installed_version`、`select_mirror`、`_mirror_label`
+- 第 3 层：GCS 失败降级、全部下载失败、非法 `TARGET` 参数、npm 安装路径（binary / PATH / marker）
+- 第 7 层：原生卸载、未安装时卸载、npm 卸载（package / PATH / marker）
 
 ---
 
@@ -72,3 +77,4 @@ pwsh -File tests/test.ps1 1 2 3
 | 2026-03-27 | PS 1-3 | Docker (pwsh) | PASS | 语法检查通过；Get-LatestVersion v2.1.85；Select-Mirror GCS 优先（境外网络）；Test-Checksum 4 种场景；Invoke-DownloadMirror 全部失败返回 false |
 | 2026-03-27 | 6 | Docker Ubuntu | PASS | 旧版本检测继续安装；已是最新版 exit 0 |
 | 2026-03-27 | 7 | Docker Ubuntu | PASS | 卸载 5 项清理全通过；发现 uninstall.sh bug：`[[ -n BINARY_PATH ]] && INSTALL_DIR=...` 在空值时被 set -e 提前退出，已修复为 if 语句 |
+| 2026-03-31 | 1-7 | Linux x64 + Docker | PASS | 修复 `install.sh` shellcheck 失败（SC2088 / SC2015）；修复 `install.ps1` 未初始化 `$global:IsGCS`；补齐 npm 安装与卸载测试；完整回归全部通过 |

@@ -8,6 +8,7 @@ set -euo pipefail
 DATA_DIR="${HOME}/.local/share/claude-code"
 CLAUDE_CONFIG_DIR="${HOME}/.claude"
 CLAUDE_CONFIG_FILE="${HOME}/.claude.json"
+NPM_PATH_MARKER="${HOME}/.claude/.npm-global-path-added"
 
 # ── Colors ────────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -97,7 +98,7 @@ find_anthropic_env() {
 remove_path_entries() {
     local binary_dir="$1"
 
-    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+    for rc in "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.profile"; do
         if [[ -f "$rc" ]] && grep -qF "$binary_dir" "$rc"; then
             sed -i.bak '/# Added by claude-code-installer/d' "$rc"
             sed -i.bak "/export PATH=.*${binary_dir//\//\\/}.*/d" "$rc"
@@ -105,6 +106,34 @@ remove_path_entries() {
             info "  Cleaned PATH in: $rc"
         fi
     done
+}
+
+# ── Find npm-managed Claude Code ─────────────────────────────────────────────
+find_npm_installation() {
+    NPM_INSTALL_FOUND=false
+    NPM_GLOBAL_BIN=""
+    NPM_CLAUDE_PATH=""
+
+    # Check the standard npm global prefix used by our installer
+    local npm_global="${HOME}/.npm-global"
+    if [[ -x "${npm_global}/bin/claude" ]]; then
+        NPM_INSTALL_FOUND=true
+        NPM_GLOBAL_BIN="${npm_global}/bin"
+        NPM_CLAUDE_PATH="${npm_global}/bin/claude"
+        return
+    fi
+
+    # Check the configured npm prefix (may differ on some systems)
+    if command -v npm &>/dev/null; then
+        local npm_prefix
+        npm_prefix="$(npm config get prefix 2>/dev/null | tr -d '\n' || true)"
+        if [[ -n "$npm_prefix" ]] && [[ "$npm_prefix" != "${HOME}/.local" ]] && \
+           [[ -x "${npm_prefix}/bin/claude" ]]; then
+            NPM_INSTALL_FOUND=true
+            NPM_GLOBAL_BIN="${npm_prefix}/bin"
+            NPM_CLAUDE_PATH="${npm_prefix}/bin/claude"
+        fi
+    fi
 }
 
 # ── Remove ANTHROPIC env vars from shell profiles ─────────────────────────────
@@ -125,10 +154,11 @@ main() {
 
     detect_os
     find_installation
+    find_npm_installation
     find_cc_switch
     find_anthropic_env
 
-    if [[ -z "$BINARY_PATH" ]] && [[ -z "$INSTALLED_VERSION" ]]; then
+    if [[ -z "$BINARY_PATH" ]] && [[ -z "$INSTALLED_VERSION" ]] && ! $NPM_INSTALL_FOUND; then
         warn "Claude Code does not appear to be installed."
         info "Nothing to remove."
         exit 0
@@ -138,6 +168,7 @@ main() {
     step "Detected installation"
     [[ -n "$INSTALLED_VERSION" ]] && info "  Version:  v${INSTALLED_VERSION}"
     [[ -n "$BINARY_PATH"       ]] && info "  Binary:   ${BINARY_PATH}"
+    $NPM_INSTALL_FOUND             && info "  npm:      ${NPM_CLAUDE_PATH} (npm global)"
     info "  Data dir: ${DATA_DIR}"
     [[ -n "$CC_SWITCH_LABEL"   ]] && info "  CC Switch: ${CC_SWITCH_LABEL}"
     [[ ${#PROFILES_WITH_ANTHROPIC[@]} -gt 0 ]] && \
@@ -146,6 +177,7 @@ main() {
 
     # ── Collect choices ──────────────────────────────────────────────────────
     REMOVE_BINARY=false
+    REMOVE_NPM=false
     REMOVE_DATA=false
     REMOVE_PATH=false
     REMOVE_CONFIG=false
@@ -155,10 +187,13 @@ main() {
     [[ -n "$BINARY_PATH" ]] && \
         ask "Remove Claude Code binary (${BINARY_PATH})?" && REMOVE_BINARY=true
 
+    $NPM_INSTALL_FOUND && \
+        ask "Uninstall Claude Code (npm global)?" && REMOVE_NPM=true
+
     [[ -d "$DATA_DIR" ]] && \
         ask "Remove data directory (~/.local/share/claude-code)?" && REMOVE_DATA=true
 
-    [[ -n "$BINARY_PATH" ]] && \
+    { [[ -n "$BINARY_PATH" ]] || $NPM_INSTALL_FOUND; } && \
         ask "Remove PATH entries from shell profiles?" && REMOVE_PATH=true
 
     { [[ -d "$CLAUDE_CONFIG_DIR" ]] || [[ -f "$CLAUDE_CONFIG_FILE" ]]; } && \
@@ -171,7 +206,7 @@ main() {
         ask "Remove ANTHROPIC_* variables from shell profiles?" && REMOVE_ANTHROPIC_ENV=true
 
     # ── Confirm ──────────────────────────────────────────────────────────────
-    if ! $REMOVE_BINARY && ! $REMOVE_DATA && ! $REMOVE_PATH && \
+    if ! $REMOVE_BINARY && ! $REMOVE_NPM && ! $REMOVE_DATA && ! $REMOVE_PATH && \
        ! $REMOVE_CONFIG && ! $REMOVE_CC_SWITCH && ! $REMOVE_ANTHROPIC_ENV; then
         printf "\nNothing selected. Exiting.\n"
         exit 0
@@ -179,6 +214,7 @@ main() {
 
     printf "\n${YELLOW}The following will be removed:${NC}\n"
     $REMOVE_BINARY       && printf "  - Binary:         %s\n" "$BINARY_PATH"
+    $REMOVE_NPM          && printf "  - npm package:    @anthropic-ai/claude-code (global)\n"
     $REMOVE_DATA         && printf "  - Data dir:       %s\n" "$DATA_DIR"
     $REMOVE_PATH         && printf "  - PATH entries\n"
     $REMOVE_CONFIG       && printf "  - Config:         %s  %s\n" \
@@ -197,13 +233,30 @@ main() {
         ok "Removed: $BINARY_PATH"
     fi
 
+    if $REMOVE_NPM; then
+        if command -v npm &>/dev/null; then
+            npm uninstall -g @anthropic-ai/claude-code && ok "npm: @anthropic-ai/claude-code uninstalled." || \
+                warn "npm uninstall failed. Run manually: npm uninstall -g @anthropic-ai/claude-code"
+        else
+            warn "npm not found. Remove manually: npm uninstall -g @anthropic-ai/claude-code"
+        fi
+    fi
+
     if $REMOVE_DATA; then
         rm -rf "$DATA_DIR"
         ok "Removed: $DATA_DIR"
     fi
 
-    if $REMOVE_PATH && [[ -n "$INSTALL_DIR" ]]; then
-        remove_path_entries "$INSTALL_DIR"
+    if $REMOVE_PATH; then
+        [[ -n "$INSTALL_DIR" ]] && remove_path_entries "$INSTALL_DIR"
+        if $NPM_INSTALL_FOUND && [[ -n "$NPM_GLOBAL_BIN" ]]; then
+            if [[ -f "${NPM_PATH_MARKER}" ]]; then
+                remove_path_entries "$NPM_GLOBAL_BIN"
+                rm -f "${NPM_PATH_MARKER}"
+            else
+                info "  Skipping npm PATH cleanup: no installer marker found."
+            fi
+        fi
         ok "PATH entries removed."
     fi
 

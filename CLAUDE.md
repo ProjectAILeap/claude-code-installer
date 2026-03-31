@@ -1,6 +1,6 @@
 # claude-code-installer
 
-多平台 Claude Code 安装脚本，支持 GitHub 镜像加速，面向国内用户。
+多平台 Claude Code 安装脚本，支持 GitHub 镜像加速，面向国内用户，并支持二进制安装与 npm 安装两条路径。
 
 - 仓库：[ProjectAILeap/claude-code-installer](https://github.com/ProjectAILeap/claude-code-installer)
 - 二进制存档：[ProjectAILeap/claude-code-releases](https://github.com/ProjectAILeap/claude-code-releases)
@@ -9,10 +9,10 @@
 
 | 脚本 | 平台 | 说明 |
 |------|------|------|
-| `install.sh` | macOS / Linux | 主安装脚本 |
-| `uninstall.sh` | macOS / Linux | 卸载脚本 |
-| `install.ps1` | Windows | PowerShell 安装脚本（`irm url \| iex` 或本地 `-ExecutionPolicy Bypass -File`） |
-| `uninstall.ps1` | Windows | PowerShell 卸载脚本（同上） |
+| `install.sh` | macOS / Linux | 主安装脚本，支持 `Direct binary` / `npm` 两种安装方式 |
+| `uninstall.sh` | macOS / Linux | 卸载脚本，支持原生安装与 npm 全局安装检测 |
+| `install.ps1` | Windows | PowerShell 安装脚本（`irm url \| iex` 或本地 `-ExecutionPolicy Bypass -File`），支持 `Native Install` / `winget` / `npm` |
+| `uninstall.ps1` | Windows | PowerShell 卸载脚本（同上），支持原生安装、winget、npm 三类卸载 |
 
 ## install.sh 核心流程
 
@@ -20,18 +20,20 @@
 detect_platform       # 平台检测（含 Rosetta 2 / musl）
 get_latest_version    # 从 GitHub API 获取最新版本号
 check_installed_version  # claude --version 检查是否已是最新
-check_git             # Linux 检查 Git 是否安装
-select_mirror         # 并发测速：GCS + 5 个 GitHub 镜像，按延迟排序
-download_and_verify   # 按 MIRROR_ORDER 顺序下载，manifest.json 校验
-run_claude_install    # 执行 claude install [TARGET]，支持 auto|force|skip，默认 25s 超时后降级
+选择安装方式          # [1] Direct binary / [2] npm
+check_git             # 二进制方式下 Linux 检查 Git；npm 方式下检查 Git 可用性
+select_mirror         # 二进制方式：并发测速 5 个 GitHub 镜像
+download_and_verify   # 二进制方式：按 MIRROR_ORDER 顺序下载，manifest.json 校验
+run_claude_install    # 二进制方式：执行 claude install [TARGET]，支持 auto|force|skip，默认 25s 超时后降级
+install_via_npm       # npm 方式：确保 Node.js >= 18，配置 npmmirror，全局安装 claude
 install_cc_switch_prompt  # 可选：安装 CC Switch（API 提供商切换器）
 configure_api_key     # 配置 ANTHROPIC_API_KEY
 ```
 
 ### 镜像策略
 
-- GCS（官方 Anthropic）和 5 个 GitHub 镜像统一并发测速，按延迟排序存入 `MIRROR_ORDER[]`
-- 下载时按顺序尝试，任意一个失败自动换下一个，无特殊优先级
+- `install.sh` 仅对 GitHub 镜像并发测速，按延迟排序存入 `MIRROR_ORDER[]`
+- 下载时按顺序尝试，任意一个失败自动换下一个
 - CC Switch 始终从 `GITHUB_MIRROR`（最快的非 GCS 源）下载
 
 ### 二进制来源与校验
@@ -48,6 +50,13 @@ configure_api_key     # 配置 ANTHROPIC_API_KEY
 - **正常路径**：`claude install [TARGET]` 完成安装，自动更新机制由此建立
 - **降级路径**（跳过 / 超时 / 失败）：直接 `cp` 二进制到 `~/.local/bin/claude`（或 macOS 的 `/usr/local/bin/claude`），无自动更新
 
+### npm 安装路径
+
+- macOS / Linux：固定使用 `~/.npm-global` 作为 npm prefix，安装到 `~/.npm-global/bin/claude`
+- Windows：使用 `%APPDATA%\npm\claude.cmd`
+- Node.js 要求为 `18+`；不足时脚本会尝试自动安装后再次校验版本
+- 安装器只在自己追加 PATH 时写入 marker，卸载时仅回收带 marker 的 npm PATH，避免删除用户原有 npm 环境配置
+
 ### 安装模式
 
 - `CLAUDE_INSTALL_MODE=auto`：默认。先探测 `api.anthropic.com`，可达时尝试 `claude install`，不可达时直接 fallback
@@ -58,10 +67,10 @@ configure_api_key     # 配置 ANTHROPIC_API_KEY
 ## install.ps1 核心差异
 
 - 二进制来自 GCS（官方，对中国用户可能超时）或 GitHub Releases（镜像加速），并发测速选最优
-- GCS + 5 个 GitHub 镜像统一并发测速，`$global:IsGCS` 标记来源，`$global:GithubMirror` 记录最快非 GCS 源
-- GCS 下载失败自动降级到 `$global:GithubMirror` + 多镜像 fallback
+- 实际镜像测速使用 GitHub 与代理镜像，`$global:IsGCS` 仅保留为兼容标记，默认初始化为 `$false`
 - 校验使用 `manifest.json`（PowerShell 原生 JSON 解析），不用 sha256sums.txt
 - 可选 winget 安装路径（`winget install Anthropic.ClaudeCode`），成功后跳过镜像下载流程
+- 新增 npm 安装路径（`Install-ViaNpm`），通过 npmmirror 安装 `@anthropic-ai/claude-code`
 - 原生路径同样调用 `claude install`，支持 `auto|force|skip`，默认 25s 超时后降级（winget 路径除外）
 - 额外功能：自动安装 Git for Windows、CC Switch（MSI）、交互式 API Key 配置
 
@@ -77,12 +86,13 @@ configure_api_key     # 配置 ANTHROPIC_API_KEY
 
 **卸载 winget 安装**：`uninstall.ps1` 会自动检测 winget 安装，走独立的 winget 卸载流程。
 
-## 与官网 install.sh 的差异
+## 与官网安装脚本的差异
 
 | 项目 | 官网 | 本项目 |
 |------|------|--------|
 | 二进制来源 | GCS only | GCS + GitHub Releases |
 | 镜像加速 | 无 | 5 个 GitHub 镜像 + 并发测速 |
+| 安装方式 | 官方单一路径 | 二进制 + npm（Windows 另含 winget） |
 | 版本检测 | 不检查本地版本 | `claude --version` 跳过已是最新 |
 | Git 检查 | 无 | Linux 有（macOS 跳过） |
 | CC Switch | 无 | 可选安装 |
@@ -94,3 +104,12 @@ configure_api_key     # 配置 ANTHROPIC_API_KEY
 ## 测试
 
 详见 [`tests/TESTING.md`](tests/TESTING.md)（层级说明、运行命令、历史记录）。
+
+当前测试覆盖：
+
+- `tests/test.sh`：静态检查、函数级单测、GCS 降级、非法参数、npm 安装模拟、Docker 集成、升级检测、原生卸载、npm 卸载
+- `tests/test.ps1`：`install.ps1` / `uninstall.ps1` 语法检查、网络函数单测、逻辑模拟
+
+最近一次完整回归：
+
+- 2026-03-31：`bash tests/test.sh` 全部通过（含 Docker Ubuntu / Alpine 与 PowerShell Docker 层）

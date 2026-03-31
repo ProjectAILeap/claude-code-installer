@@ -29,6 +29,7 @@ $GIT_REPO         = "git-for-windows/git"
 $CC_SWITCH_REPO   = "farion1231/cc-switch"
 $DOWNLOAD_DIR     = "$env:USERPROFILE\.claude\downloads"   # aligns with official
 $CLAUDE_JSON      = "$env:USERPROFILE\.claude.json"
+$NPM_PATH_MARKER  = "$env:USERPROFILE\.claude\npm-path-added"
 $GIT_MIN_VER      = [Version]"2.40.0"
 $GIT_FALLBACK_VER = "2.47.1"
 $GIT_FALLBACK_TAG = "v2.47.1.windows.1"
@@ -60,7 +61,9 @@ function Exit-WithError {
 # -- Mirror selection ----------------------------------------------------------
 $global:SelectedMirror     = ""
 $global:GithubMirror       = ""   # fastest mirror (used for CC Switch / Git)
+$global:IsGCS             = $false
 $global:InstalledViaWinget = $false
+$global:InstalledViaNpm    = $false
 $global:InstallMethod      = ""
 $global:InstalledClaudeExe = ""
 
@@ -140,11 +143,13 @@ function Select-Mirror {
         $best = $reachable[0]
         $global:SelectedMirror = $best.Mirror
         $global:GithubMirror   = $best.Mirror
+        $global:IsGCS          = $false
         $tag = $best.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
         Write-Ok "Selected: $tag ($($best.Ms) ms)"
     } else {
         $global:SelectedMirror = "https://ghfast.top/https://github.com"
         $global:GithubMirror   = "https://ghfast.top/https://github.com"
+        $global:IsGCS          = $false
         Write-Warn "All mirror checks timed out. Defaulting to ghfast.top."
     }
 }
@@ -734,6 +739,185 @@ function Install-ViaWinget {
     }
 }
 
+# -- Ensure Node.js >= 18 (npm install path) -----------------------------------
+function Ensure-Node {
+    $minMajor = 18
+    $currentMajor = 0
+
+    $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+    if ($nodeCmd) {
+        try {
+            $ver = (& $nodeCmd.Source --version 2>&1) -replace '^v', ''
+            $currentMajor = [int]($ver -split '\.')[0]
+        } catch {}
+    }
+
+    if ($currentMajor -ge $minMajor) {
+        Write-Ok "Node.js $($currentMajor).x found."
+        return
+    }
+
+    Write-Step "Installing Node.js..."
+
+    # Fetch latest LTS version from npmmirror
+    $nodeVer = "v22.14.0"
+    try {
+        $list = Invoke-RestMethod -Uri "https://npmmirror.com/mirrors/node/index.json" `
+            -TimeoutSec 8 -ErrorAction Stop
+        $lts = $list | Where-Object { $_.lts -and $_.lts -ne $false } |
+            Sort-Object { [Version]($_.version -replace '^v','') } -Descending |
+            Select-Object -First 1
+        if ($lts) { $nodeVer = $lts.version }
+    } catch {
+        Write-Info "Could not fetch Node.js version list, using $nodeVer"
+    }
+
+    $arch = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "arm64" } else { "x64" }
+    $msiName = "node-$nodeVer-$arch.msi"
+
+    $msiUrls = @(
+        "https://npmmirror.com/mirrors/node/$nodeVer/$msiName",
+        "https://nodejs.org/dist/$nodeVer/$msiName"
+    )
+
+    $tmpMsi = "$env:TEMP\$msiName"
+    $downloaded = $false
+    foreach ($url in $msiUrls) {
+        if (Invoke-Download -Url $url -OutFile $tmpMsi -Label "Node.js $nodeVer") {
+            $downloaded = $true; break
+        }
+    }
+
+    if ($downloaded) {
+        Write-Info "Installing Node.js silently..."
+        try {
+            $proc = Start-Process -FilePath "msiexec.exe" `
+                -ArgumentList "/i `"$tmpMsi`" /qn /norestart" `
+                -Wait -PassThru -ErrorAction Stop
+            if ($proc.ExitCode -eq 0) {
+                Write-Ok "Node.js $nodeVer installed."
+            } else {
+                Write-Warn "Node.js MSI exited with code $($proc.ExitCode)."
+            }
+        } catch {
+            Write-Warn "Failed to run Node.js installer: $($_.Exception.Message)"
+        }
+        Remove-Item $tmpMsi -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Warn "Node.js download failed."
+        Write-Warn "Install winget fallback..."
+        $wingetExe = Get-WingetExe
+        if ($wingetExe) {
+            try {
+                $proc = Start-Process $wingetExe `
+                    -ArgumentList "install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent" `
+                    -PassThru -NoNewWindow -ErrorAction Stop
+                $proc.WaitForExit(120000) | Out-Null
+                if ($proc.ExitCode -eq 0) { Write-Ok "Node.js installed via winget." }
+            } catch {
+                Write-Warn "winget fallback failed. Install Node.js 18+ manually: https://nodejs.org"
+            }
+        } else {
+            Write-Warn "Install Node.js 18+ manually: https://nodejs.org"
+        }
+    }
+
+    # Refresh PATH so node/npm are available in current session
+    $mp = [Environment]::GetEnvironmentVariable("Path", "Machine"); if ($null -eq $mp) { $mp = "" }
+    $up = [Environment]::GetEnvironmentVariable("Path", "User");    if ($null -eq $up) { $up = "" }
+    $env:Path = "$mp;$up"
+
+    $nodeCmd2 = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $nodeCmd2) {
+        # Try common install locations
+        foreach ($p in @(
+            "$env:ProgramFiles\nodejs\node.exe",
+            "$env:LOCALAPPDATA\Programs\nodejs\node.exe"
+        )) {
+            if (Test-Path $p) {
+                $dir = Split-Path $p -Parent
+                $env:Path = "$env:Path;$dir"
+                break
+            }
+        }
+    }
+
+    $nodeCmd3 = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $nodeCmd3) {
+        Exit-WithError "Node.js installation failed. Please install Node.js 18+ manually."
+    }
+    try {
+        $verNow = (& $nodeCmd3.Source --version 2>&1) -replace '^v', ''
+        $majorNow = [int]($verNow -split '\.')[0]
+        if ($majorNow -lt $minMajor) {
+            Exit-WithError "Node.js $verNow is too old. Please install Node.js 18+ manually."
+        }
+        Write-Ok "Node.js v$verNow ready."
+    } catch {
+        Exit-WithError "Unable to validate Node.js version after installation."
+    }
+}
+
+# -- npm install path ----------------------------------------------------------
+function Install-ViaNpm {
+    Ensure-Node
+
+    $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    if (-not $npmCmd) {
+        # npm should be alongside node; check common paths
+        foreach ($p in @(
+            "$env:ProgramFiles\nodejs\npm.cmd",
+            "$env:LOCALAPPDATA\Programs\nodejs\npm.cmd"
+        )) {
+            if (Test-Path $p) {
+                $dir = Split-Path $p -Parent
+                if ($env:Path -notlike "*$dir*") { $env:Path = "$env:Path;$dir" }
+                break
+            }
+        }
+        $npmCmd = Get-Command npm -ErrorAction SilentlyContinue
+    }
+
+    if (-not $npmCmd) {
+        Exit-WithError "npm not found after Node.js installation. Please install Node.js 18+ manually."
+    }
+
+    Write-Step "Configuring npm and installing Claude Code..."
+    & $npmCmd.Source config set registry "https://registry.npmmirror.com" 2>&1 | Out-Null
+    & $npmCmd.Source i -g "@anthropic-ai/claude-code" --registry=https://registry.npmmirror.com
+
+    # Add %APPDATA%\npm to user PATH if not present
+    $npmBin = "$env:APPDATA\npm"
+    $currentUp = [Environment]::GetEnvironmentVariable("Path", "User")
+    if ($null -eq $currentUp) { $currentUp = "" }
+    if (-not $currentUp.Contains($npmBin)) {
+        [Environment]::SetEnvironmentVariable("Path", "$currentUp;$npmBin", "User")
+        New-Item -ItemType Directory -Force -Path (Split-Path $NPM_PATH_MARKER -Parent) | Out-Null
+        New-Item -ItemType File -Force -Path $NPM_PATH_MARKER | Out-Null
+        Write-Ok "Added to PATH: $npmBin"
+    }
+    if ($env:Path -notlike "*$npmBin*") { $env:Path = "$env:Path;$npmBin" }
+
+    # Disable claude.ps1 shim to avoid execution policy issues
+    $shimPs1 = "$npmBin\claude.ps1"
+    if (Test-Path $shimPs1) {
+        Rename-Item $shimPs1 "$npmBin\claude.ps1.disabled" -ErrorAction SilentlyContinue
+        Write-Info "Renamed claude.ps1 to claude.ps1.disabled (claude.cmd shim works without it)."
+    }
+
+    $global:InstalledViaNpm    = $true
+    $global:InstallMethod      = "npm"
+    $global:InstalledClaudeExe = "$npmBin\claude.cmd"
+
+    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+    if ($claudeCmd) {
+        Write-Ok "Claude Code installed: $($claudeCmd.Source)"
+        $global:InstalledClaudeExe = $claudeCmd.Source
+    } else {
+        Write-Warn "claude not in PATH yet. Open a new terminal after installation."
+    }
+}
+
 # -- Main ----------------------------------------------------------------------
 function Main {
     Write-Host ""
@@ -780,11 +964,12 @@ function Main {
     }
 
     if (-not $skipInstall) {
-        # 4. Choose installation method (mirrors official claude.ai/install.ps1 prompt)
+        # 4. Choose installation method
         Write-Host ""
         Write-Host "Select installation method:" -ForegroundColor Cyan
         Write-Host "  [1] Native Install (Recommended) -- downloads official binary, sets up auto-update"
         Write-Host "  [2] winget                        -- uses Windows Package Manager"
+        Write-Host "  [3] npm (via npmmirror)           -- installs via npm registry"
         Write-Host ""
         $methodChoice = Read-Host "Enter choice [1]"
         if ($methodChoice -eq "2") {
@@ -800,18 +985,20 @@ function Main {
             } else {
                 Write-Warn "winget is not available on this system, falling back to Native Install."
             }
+        } elseif ($methodChoice -eq "3") {
+            Install-ViaNpm
         }
     }
 
-    if (-not $global:InstalledViaWinget) {
+    if (-not $global:InstalledViaWinget -and -not $global:InstalledViaNpm) {
         # 5. Select fastest GitHub mirror
         if (-not $skipInstall) { Select-Mirror -Version $targetVersion }
     }
 
-    # 6. Ensure Git
+    # 6. Ensure Git (all install methods need Git for Claude Code to function)
     Ensure-Git
 
-    if (-not $global:InstalledViaWinget -and -not $skipInstall) {
+    if (-not $global:InstalledViaWinget -and -not $global:InstalledViaNpm -and -not $skipInstall) {
         # 7. Prepare download dir (aligns with official: ~/.claude/downloads)
         New-Item -ItemType Directory -Force -Path $DOWNLOAD_DIR | Out-Null
 
@@ -984,6 +1171,9 @@ function Main {
         Write-Host "  Install mode: official (via claude install, auto-update enabled)"
     } elseif ($global:InstallMethod -eq "fallback") {
         Write-Host "  Install mode: fallback (direct binary copy, no auto-update)"
+    } elseif ($global:InstallMethod -eq "npm") {
+        Write-Host "  Install mode: npm (via npmmirror)"
+        Write-Host "  Upgrade:      npm update -g @anthropic-ai/claude-code"
     }
     if ($global:InstalledClaudeExe) {
         Write-Host "  Binary: $global:InstalledClaudeExe"

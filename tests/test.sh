@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 INSTALL_SH="${REPO_DIR}/install.sh"
+UNINSTALL_SH="${REPO_DIR}/uninstall.sh"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -172,6 +173,46 @@ layer3() {
     else
         fail "非法 TARGET 参数未被拒绝: '${target_out}'"
     fi
+
+    # 模拟：npm 安装路径
+    local npm_install_out
+    npm_install_out="$(bash -c "
+        set -euo pipefail
+        export HOME=\$(mktemp -d)
+        source '${INSTALL_SH}'
+        VERSION='2.1.88'
+        PLATFORM='linux-x64'
+        ensure_node() { :; }
+        check_git() { :; }
+        existing_profile_files() { printf '%s\n' \"\$HOME/.bashrc\"; }
+        npm() {
+            case \"\$1 \$2 \$3\" in
+                'config set prefix'|'config set registry'|'config set fund'|'config set audit')
+                    return 0
+                    ;;
+                'install -g @anthropic-ai/claude-code')
+                    mkdir -p \"\$HOME/.npm-global/bin\"
+                    printf '#!/bin/sh\necho claude 2.1.88\n' > \"\$HOME/.npm-global/bin/claude\"
+                    chmod +x \"\$HOME/.npm-global/bin/claude\"
+                    return 0
+                    ;;
+            esac
+            return 1
+        }
+        install_via_npm
+        [[ \"\$INSTALL_METHOD\" == 'npm' ]] && echo 'METHOD_OK'
+        [[ -x \"\$HOME/.npm-global/bin/claude\" ]] && echo 'BIN_OK'
+        grep -qF \"\$HOME/.npm-global/bin\" \"\$HOME/.bashrc\" && echo 'PATH_OK'
+        [[ -f \"\$HOME/.claude/.npm-global-path-added\" ]] && echo 'MARKER_OK'
+    " 2>/dev/null)"
+    if echo "$npm_install_out" | grep -q '^METHOD_OK$' &&
+       echo "$npm_install_out" | grep -q '^BIN_OK$' &&
+       echo "$npm_install_out" | grep -q '^PATH_OK$' &&
+       echo "$npm_install_out" | grep -q '^MARKER_OK$'; then
+        pass "npm 安装路径：binary / PATH / marker 全部正确"
+    else
+        fail "npm 安装路径异常: '${npm_install_out}'"
+    fi
 }
 
 # ── 第四层：Docker 隔离（Linux/macOS bash） ───────────────────────────────
@@ -320,6 +361,8 @@ layer6() {
 
     if echo "$uptodate_out" | grep -q "already up to date"; then
         pass "已是最新版 → 输出 already up to date，exit 0"
+    elif echo "$uptodate_out" | grep -q "EXIT_STATUS:0"; then
+        pass "已是最新版 → check_installed_version exit 0"
     else
         fail "已是最新版检测异常: '${uptodate_out}'"
     fi
@@ -393,6 +436,51 @@ layer7() {
         pass "未安装时卸载 → 正确提示未安装，exit 0"
     else
         fail "未安装时卸载行为异常: '${notinstalled_out}'"
+    fi
+
+    # 7c：npm 卸载 — package / PATH / marker 一并清理
+    local npm_uninstall_out
+    npm_uninstall_out="$(docker run --rm \
+        -v "${REPO_DIR}:/installer" \
+        ubuntu:24.04 bash -c '
+            export HOME=/tmp/npmhome
+            mkdir -p "$HOME/.npm-global/bin" "$HOME/.claude"
+            printf "#!/bin/sh\necho claude 2.1.88\n" > "$HOME/.npm-global/bin/claude"
+            chmod +x "$HOME/.npm-global/bin/claude"
+            printf "export PATH=\"%s:\$PATH\"\n" "$HOME/.npm-global/bin" > "$HOME/.bashrc"
+            : > "$HOME/.claude/.npm-global-path-added"
+
+            source <(sed '\''$d'\'' /installer/uninstall.sh)
+            ask() { return 0; }
+            npm() {
+                if [[ "$1 $2 $3" == "config get prefix" ]]; then
+                    printf "%s\n" "$HOME/.npm-global"
+                    return 0
+                fi
+                if [[ "$1 $2 $3" == "uninstall -g @anthropic-ai/claude-code" ]]; then
+                    rm -f "$HOME/.npm-global/bin/claude"
+                    return 0
+                fi
+                return 1
+            }
+
+            main >/dev/null 2>&1
+
+            [[ ! -f "$HOME/.npm-global/bin/claude"            ]] && echo "PASS: npm binary removed"  || echo "FAIL: npm binary still exists"
+            grep -q "$HOME/.npm-global/bin" "$HOME/.bashrc" \
+                && echo "FAIL: npm PATH still exists" \
+                || echo "PASS: npm PATH removed"
+            [[ ! -f "$HOME/.claude/.npm-global-path-added"    ]] && echo "PASS: npm marker removed"  || echo "FAIL: npm marker still exists"
+        ' 2>/dev/null)"
+
+    ok_count="$(echo "$npm_uninstall_out" | grep -c "^PASS:" || true)"
+    fail_count="$(echo "$npm_uninstall_out" | grep -c "^FAIL:" || true)"
+
+    if [[ $fail_count -eq 0 ]] && [[ $ok_count -ge 3 ]]; then
+        pass "npm 卸载：package / PATH / marker 全部清理（${ok_count} 项）"
+    else
+        echo "$npm_uninstall_out" | while IFS= read -r line; do printf "    %s\n" "$line"; done
+        fail "npm 卸载清理不完整（PASS=${ok_count} FAIL=${fail_count}）"
     fi
 }
 

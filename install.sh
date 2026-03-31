@@ -27,6 +27,7 @@ DOWNLOAD_DIR="${HOME}/.claude/downloads"
 DATA_DIR="${HOME}/.local/share/claude-code"
 VERSION_FILE="${DATA_DIR}/version"
 CLAUDE_JSON="${HOME}/.claude.json"
+NPM_PATH_MARKER="${HOME}/.claude/.npm-global-path-added"
 CLAUDE_INSTALL_TIMEOUT="${CLAUDE_INSTALL_TIMEOUT:-25}"
 CLAUDE_INSTALL_MODE="${CLAUDE_INSTALL_MODE:-auto}"
 CC_SWITCH_INSTALLED=false
@@ -64,6 +65,31 @@ _now_ms() {
     perl -MTime::HiRes=time -e 'printf "%d\n", time()*1000' 2>/dev/null && return
     # Last resort: second precision only
     echo $(($(date +%s) * 1000))
+}
+
+version_ge() {
+    perl -e '
+        my @a = split /\./, $ARGV[0];
+        my @b = split /\./, $ARGV[1];
+        my $n = @a > @b ? scalar @a : scalar @b;
+        for my $i (0 .. $n - 1) {
+            my $x = $a[$i] // 0;
+            my $y = $b[$i] // 0;
+            exit($x > $y ? 0 : 1) if $x != $y;
+        }
+        exit 0;
+    ' "$1" "$2"
+}
+
+node_major_version() {
+    if ! command -v node &>/dev/null; then
+        printf '0\n'
+        return
+    fi
+
+    local ver
+    ver="$(node --version 2>/dev/null | tr -d 'v\n')"
+    printf '%s\n' "${ver%%.*}"
 }
 
 can_reach_anthropic_api() {
@@ -313,6 +339,12 @@ check_installed_version() {
         out="$("${CLAUDE_BIN}" --version 2>&1 || true)"
         if [[ "$out" =~ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
             INSTALLED_VERSION="${BASH_REMATCH[1]}"
+            if [[ "$INSTALLED_VERSION" == "$VERSION" ]]; then
+                ok "Claude Code v${VERSION} is already up to date."
+            else
+                info "Installed: v${INSTALLED_VERSION}"
+                info "Upgrading to: v${VERSION}"
+            fi
         fi
     fi
 }
@@ -416,8 +448,6 @@ _cached_checksum_ok() {
 # ── Download & verify ─────────────────────────────────────────────────────
 download_and_verify() {
     mkdir -p "${DOWNLOAD_DIR}"
-    TMP_DIR="$(mktemp -d)"
-    trap 'rm -rf "${TMP_DIR}"' EXIT
 
     local cache_file="${DOWNLOAD_DIR}/claude-${VERSION}-${PLATFORM}"
 
@@ -616,7 +646,7 @@ with open(p, "w") as f:
 PYEOF
         fi
         if [[ "$updated" == "true" ]]; then
-            ok "~/.claude.json: onboarding skip set."
+            ok "${CLAUDE_JSON}: onboarding skip set."
             return
         fi
         warn "Could not update ~/.claude.json — set hasCompletedOnboarding manually if needed."
@@ -812,6 +842,169 @@ install_cc_switch_prompt() {
     fi
 }
 
+# ── Ensure Node.js ≥ 18 (required for npm install path) ─────────────────
+ensure_node() {
+    local min_major=18
+    local current_major
+    current_major="$(node_major_version)"
+
+    if (( current_major >= min_major )); then
+        ok "Node.js ${current_major}.x found."
+        return
+    fi
+
+    step "Installing Node.js..."
+    if [[ "${PLATFORM}" == darwin-* ]]; then
+        if command -v brew &>/dev/null; then
+            brew install node || warn "Homebrew Node.js install failed."
+        fi
+        current_major="$(node_major_version)"
+        if (( current_major < min_major )); then
+            # Brew unavailable or install failed: download .pkg from npmmirror
+            local node_ver="v22.14.0"
+            local fetched
+            fetched="$(curl -sf --connect-timeout 8 --max-time 10 \
+                'https://npmmirror.com/mirrors/node/index.json' 2>/dev/null | \
+                grep -oE '"version":"v[0-9]+\.[0-9]+\.[0-9]+"[^}]*"lts":"[^"f]' | \
+                grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | tail -1 || true)"
+            [[ -n "$fetched" ]] && node_ver="$fetched"
+            local arch_str="arm64"
+            [[ "${PLATFORM}" == darwin-x64 ]] && arch_str="x64"
+            local pkg_url="https://npmmirror.com/mirrors/node/${node_ver}/node-${node_ver}-darwin-${arch_str}.pkg"
+            local tmp_pkg
+            tmp_pkg="$(mktemp /tmp/node-XXXXXX.pkg)"
+            if curl -fL --connect-timeout 30 --max-time 300 --progress-bar \
+                 -o "$tmp_pkg" "$pkg_url" 2>/dev/null; then
+                if sudo installer -pkg "$tmp_pkg" -target /; then
+                    ok "Node.js ${node_ver} installed."
+                else
+                    warn "Node.js .pkg install failed. Install manually: https://nodejs.org"
+                fi
+            else
+                warn "Node.js download failed. Install manually: https://nodejs.org"
+            fi
+            rm -f "$tmp_pkg"
+        fi
+    else
+        # Linux: try common package managers
+        if command -v apt-get &>/dev/null; then
+            info "Installing Node.js via apt-get..."
+            if sudo apt-get update -qq 2>/dev/null && sudo apt-get install -y nodejs npm; then
+                :
+            else
+                warn "apt-get failed. Install Node.js 18+: https://nodejs.org"
+            fi
+        elif command -v dnf &>/dev/null; then
+            info "Installing Node.js via dnf..."
+            sudo dnf install -y nodejs npm || \
+                warn "dnf failed. Install Node.js 18+: https://nodejs.org"
+        elif command -v yum &>/dev/null; then
+            info "Installing Node.js via yum..."
+            sudo yum install -y nodejs npm || \
+                warn "yum failed. Install Node.js 18+: https://nodejs.org"
+        elif command -v pacman &>/dev/null; then
+            info "Installing Node.js via pacman..."
+            sudo pacman -S --noconfirm nodejs npm || \
+                warn "pacman failed. Install Node.js 18+: https://nodejs.org"
+        else
+            die "Cannot detect package manager. Install Node.js 18+ manually: https://nodejs.org"
+        fi
+    fi
+
+    command -v node &>/dev/null || die "Node.js installation failed. Install Node.js 18+ and retry."
+    current_major="$(node_major_version)"
+    (( current_major >= min_major )) || die "Node.js $(node --version 2>/dev/null) is too old. Install Node.js 18+ and retry."
+    ok "Node.js $(node --version) ready."
+}
+
+# ── macOS Git version check ───────────────────────────────────────────────
+check_git_version_macos() {
+    local min_ver="2.40.0"
+    if ! command -v git &>/dev/null; then
+        warn "Git not found. Claude Code requires Git."
+        warn "Install Xcode Command Line Tools: xcode-select --install"
+        return
+    fi
+    local current
+    current="$(git --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    if version_ge "$current" "$min_ver"; then
+        ok "Git ${current} -- OK"
+    else
+        warn "Git ${current} < ${min_ver}."
+        if command -v brew &>/dev/null; then
+            info "Upgrading Git via Homebrew..."
+            brew install git
+        else
+            warn "Please upgrade Git (>= 2.40.0): https://git-scm.com"
+        fi
+    fi
+}
+
+# ── npm install path ──────────────────────────────────────────────────────
+# Bug 2 fix: reuses write_claude_json() which uses perl on macOS (no python3).
+install_via_npm() {
+    ensure_node
+
+    if [[ "${PLATFORM}" == darwin-* ]]; then
+        check_git_version_macos
+    else
+        check_git
+    fi
+
+    step "Configuring npm and installing Claude Code..."
+    local npm_global="${HOME}/.npm-global"
+    mkdir -p "${npm_global}"
+    npm config set prefix "${npm_global}" 2>/dev/null || true
+    npm config set registry "https://registry.npmmirror.com" 2>/dev/null || true
+    npm config set fund false 2>/dev/null || true
+    npm config set audit false 2>/dev/null || true
+
+    info "Installing @anthropic-ai/claude-code via npmmirror..."
+    npm install -g "@anthropic-ai/claude-code" --registry=https://registry.npmmirror.com
+
+    # Add npm global bin to PATH in shell profiles
+    local npm_bin="${npm_global}/bin"
+    local export_line="export PATH=\"${npm_bin}:\$PATH\""
+    local added=false
+    local rc_files=()
+    mapfile -t rc_files < <(existing_profile_files)
+
+    for rc in "${rc_files[@]}"; do
+        if [[ ! -e "$rc" ]]; then
+            mkdir -p "$(dirname "$rc")"
+            : > "$rc"
+        fi
+        if ! grep -qF "${npm_bin}" "$rc"; then
+            {
+                printf '\n# Added by claude-code-installer (npm global path)\n'
+                printf '%s\n' "$export_line"
+            } >> "$rc"
+            [[ -z "${PATH_RC_FILE}" ]] && PATH_RC_FILE="$rc"
+            info "  Updated: $rc"
+            added=true
+        fi
+    done
+    if $added; then
+        mkdir -p "$(dirname "${NPM_PATH_MARKER}")"
+        : > "${NPM_PATH_MARKER}"
+    fi
+    export PATH="${npm_bin}:${PATH}"
+    $added || warn "Add manually: ${export_line}"
+
+    INSTALL_DIR="${npm_bin}"
+    INSTALL_METHOD="npm"
+
+    # Update VERSION to match what was actually installed
+    if find_installed_claude; then
+        ok "Claude Code installed: ${CLAUDE_BIN}"
+        local installed_ver
+        installed_ver="$("${CLAUDE_BIN}" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+        [[ -n "$installed_ver" ]] && VERSION="$installed_ver"
+    else
+        warn "claude not found in PATH yet — restart your shell after installation."
+    fi
+}
+
 # ── Done ──────────────────────────────────────────────────────────────────
 print_done() {
     printf "\n"
@@ -820,6 +1013,9 @@ print_done() {
         printf "  Install mode: official (via ${BOLD}claude install${NC}, auto-update enabled)\n"
     elif [[ "${INSTALL_METHOD}" == "fallback" ]]; then
         printf "  Install mode: fallback (direct binary copy, no auto-update)\n"
+    elif [[ "${INSTALL_METHOD}" == "npm" ]]; then
+        printf "  Install mode: npm (via npmmirror)\n"
+        printf "  Upgrade:      ${BOLD}npm update -g @anthropic-ai/claude-code${NC}\n"
     fi
     if [[ -n "${CLAUDE_BIN}" ]]; then
         printf "  Binary: %s\n" "${CLAUDE_BIN}"
@@ -890,10 +1086,26 @@ main() {
         info "Installing Claude Code v${VERSION}"
     fi
 
-    check_git
-    select_mirror
-    download_and_verify
-    run_claude_install
+    # Method selection
+    printf "\n${BOLD}Select install method:${NC}\n"
+    printf "  [1] Direct binary (Recommended) — downloads official binary, verifies SHA-256\n"
+    printf "  [2] npm (via npmmirror)          — installs via npm registry\n"
+    printf "\n"
+    local method_choice="1"
+    [ -t 0 ] && { printf "Enter choice [1]: "; read -r method_choice </dev/tty || true; }
+    [[ -z "$method_choice" ]] && method_choice="1"
+
+    TMP_DIR="$(mktemp -d)"
+    trap 'rm -rf "${TMP_DIR}"' EXIT
+
+    if [[ "$method_choice" == "2" ]]; then
+        install_via_npm
+    else
+        check_git
+        select_mirror
+        download_and_verify
+        run_claude_install
+    fi
     install_cc_switch_prompt
     configure_api_key
     print_done
