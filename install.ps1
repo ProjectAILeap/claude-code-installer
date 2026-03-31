@@ -178,7 +178,7 @@ function Get-LatestVersion {
 
     if (-not $ver) {
         try {
-            $fallbackUrl = "https://kkgithub.com/$RELEASES_REPO/releases/latest"
+            $fallbackUrl = "https://github.com/$RELEASES_REPO/releases/latest"
             $resp = Invoke-WebRequest -Uri $fallbackUrl -Method Head `
                 -TimeoutSec 10 -UseBasicParsing -MaximumRedirection 0 `
                 -ErrorAction SilentlyContinue
@@ -563,7 +563,6 @@ function Install-CcSwitch {
     $msiUrls = @(
         (Get-DownloadUrl "/$CC_SWITCH_REPO/releases/download/v$ccVer/$msiName"),
         "https://ghfast.top/https://github.com/$CC_SWITCH_REPO/releases/download/v$ccVer/$msiName",
-        "https://kkgithub.com/$CC_SWITCH_REPO/releases/download/v$ccVer/$msiName",
         "https://github.com/$CC_SWITCH_REPO/releases/download/v$ccVer/$msiName"
     ) | Select-Object -Unique
 

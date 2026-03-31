@@ -180,18 +180,18 @@ function Layer3 {
     }
 
     # Get-DownloadUrl 始终用 GithubMirror（不用 GCS）
-    $global:GithubMirror   = "https://kkgithub.com"
+    $global:GithubMirror   = "https://github.com"
     $global:SelectedMirror = "https://storage.googleapis.com/fake-gcs"
     $global:IsGCS          = $true
     $url = Get-DownloadUrl "/cc-switch/releases/download/v1.0/cc.msi"
-    if ($url -match '^https://kkgithub\.com/') {
+    if ($url -match '^https://github\.com/') {
         Pass "Get-DownloadUrl IsGCS=true 时仍走 GithubMirror → $url"
     } else {
         Fail "Get-DownloadUrl IsGCS=true 时应走 GithubMirror，实际: '$url'"
     }
 
     # Invoke-DownloadMirror 以 GithubMirror 为首选（不含 GCS）
-    $global:GithubMirror = "https://kkgithub.com"
+    $global:GithubMirror = "https://github.com"
     $tmpOut = Join-Path ([System.IO.Path]::GetTempPath()) "test_dl_$(Get-Random).bin"
     $dlOk = Invoke-DownloadMirror -Path "/nonexistent-path-for-test" -OutFile $tmpOut -Label "test" 2>$null
     Remove-Item $tmpOut -Force -ErrorAction SilentlyContinue

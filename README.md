@@ -141,7 +141,6 @@ $env:CLAUDE_INSTALL_MODE="force"; $env:CLAUDE_INSTALL_TIMEOUT="40"; powershell -
 | ghfast.top | 代理镜像 |
 | gh-proxy.com | 代理镜像 |
 | mirror.ghproxy.com | 代理镜像 |
-| kkgithub.com | 域名镜像 |
 
 ---
 

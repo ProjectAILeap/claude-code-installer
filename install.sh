@@ -320,7 +320,7 @@ get_latest_version() {
         info "GitHub API unavailable, trying fallback..."
         local location
         location="$(curl -sI --connect-timeout 8 --max-time 12 \
-            "https://kkgithub.com/${RELEASES_REPO}/releases/latest" 2>/dev/null | \
+            "https://github.com/${RELEASES_REPO}/releases/latest" 2>/dev/null | \
             grep -i '^location:' | tr -d '\r' | awk '{print $2}')"
         VERSION="$(printf '%s' "$location" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
     fi
