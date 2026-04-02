@@ -793,33 +793,41 @@ function Install-ViaWinget {
     param([string]$WingetExe = "winget")
     Write-Step "Installing Claude Code via winget (timeout 120s)..."
     try {
-        $proc = Start-Process $WingetExe `
-            -ArgumentList "install -e --id Anthropic.ClaudeCode --source winget --accept-source-agreements --accept-package-agreements --silent" `
-            -PassThru -NoNewWindow -ErrorAction Stop
-        $finished = $proc.WaitForExit(120000)
-        if (-not $finished) {
-            try { $proc.Kill() } catch {}
-            Write-Warn "winget timed out (120s), falling back to mirror download..."
+        $installArgs = @(
+            "install", "-e",
+            "--id", "Anthropic.ClaudeCode",
+            "--source", "winget",
+            "--accept-source-agreements",
+            "--accept-package-agreements",
+            "--silent"
+        )
+        & $WingetExe @installArgs
+        $exitCode = $LASTEXITCODE
+
+        if ($null -eq $exitCode) {
+            Write-Warn "winget did not return an exit code, treating as failure and falling back to mirror download..."
             $global:InstalledViaWinget = $false
             return
         }
+
         # 0 = success; -1978335189 (0x8A150B2B) = no applicable upgrade (already up to date)
-        $alreadyUpToDate = ($proc.ExitCode -eq -1978335189)
-        if ($proc.ExitCode -eq 0 -or $alreadyUpToDate) {
+        $alreadyUpToDate = ($exitCode -eq -1978335189)
+        if ($exitCode -eq 0 -or $alreadyUpToDate) {
             if ($alreadyUpToDate) {
                 Write-Ok "Claude Code is already up to date (winget)."
             } else {
                 Write-Ok "Claude Code installed via winget."
             }
-            Write-Info "Note: winget installation does not set up shell integration or auto-update."
+            Write-Info "winget modifies PATH/App Execution Aliases for new terminals."
+            Write-Warn "Current terminal may not resolve 'claude' yet; open a NEW terminal if needed."
             Write-Info "To upgrade later: winget upgrade Anthropic.ClaudeCode"
             $global:InstalledViaWinget = $true
-            # Refresh current session PATH so claude is usable immediately
+            # Refresh current session PATH from registry, though WindowsApps aliases may still need a new shell.
             $mp = [Environment]::GetEnvironmentVariable("Path", "Machine"); if ($null -eq $mp) { $mp = "" }
             $up = [Environment]::GetEnvironmentVariable("Path", "User");    if ($null -eq $up) { $up = "" }
             $env:Path = "$mp;$up"
         } else {
-            Write-Warn "winget failed (exit $($proc.ExitCode)), falling back to mirror download..."
+            Write-Warn "winget failed (exit $exitCode), falling back to mirror download..."
             $global:InstalledViaWinget = $false
         }
     } catch {
