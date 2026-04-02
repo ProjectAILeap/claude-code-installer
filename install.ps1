@@ -14,7 +14,7 @@
 
 # ── Self-elevation ────────────────────────────────────────────────────────────
 # Request admin rights once at startup so Git/Node installs run silently.
-if (($IsWindows -or $env:OS -eq 'Windows_NT') -and
+if (($env:OS -eq 'Windows_NT') -and
     -not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
          ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $pwsh = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh.exe" } else { "powershell.exe" }
@@ -47,6 +47,8 @@ $CC_SWITCH_REPO   = "farion1231/cc-switch"
 $DOWNLOAD_DIR     = "$env:USERPROFILE\.claude\downloads"   # aligns with official
 $CLAUDE_JSON      = "$env:USERPROFILE\.claude.json"
 $NPM_PATH_MARKER  = "$env:USERPROFILE\.claude\npm-path-added"
+$GIT_INSTALL_MARKER = "$env:USERPROFILE\.claude\git-installed-by-installer"
+$NODE_INSTALL_MARKER = "$env:USERPROFILE\.claude\node-installed-by-installer"
 $GIT_MIN_VER      = [Version]"2.40.0"
 $GIT_FALLBACK_VER = "2.47.1"
 $GIT_FALLBACK_TAG = "v2.47.1.windows.1"
@@ -73,6 +75,16 @@ function Exit-WithError {
     param($msg)
     Write-Err $msg
     exit 1
+}
+
+function Write-InstallerMarker {
+    param([string]$Path)
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path $Path -Parent) | Out-Null
+        Set-Content -Path $Path -Value "installed-by-claude-code-installer" -Encoding ASCII -Force
+    } catch {
+        Write-Warn "Could not write installer marker: $Path"
+    }
 }
 
 # -- Mirror selection ----------------------------------------------------------
@@ -349,6 +361,7 @@ function Ensure-Git {
     Write-Step "Checking Git for Windows..."
 
     $gitExe = $null
+    $gitWasMissing = $true
     $gitCmd = Get-Command git -ErrorAction SilentlyContinue
     if ($gitCmd) { $gitExe = $gitCmd.Source }
     if (-not $gitExe) {
@@ -377,6 +390,8 @@ function Ensure-Git {
     } else {
         Write-Info "Git not found."
     }
+
+    if ($gitExe) { $gitWasMissing = $false }
 
     if (-not $needInstall) { return }
 
@@ -443,7 +458,10 @@ function Ensure-Git {
             try {
                 $gitArgs = '/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"'
                 $proc = Start-Process -FilePath $tmpExe -ArgumentList $gitArgs -Wait -PassThru -ErrorAction Stop
-                if ($proc.ExitCode -eq 0) { Write-Ok "Git installed." }
+                if ($proc.ExitCode -eq 0) {
+                    Write-Ok "Git installed."
+                    if ($gitWasMissing) { Write-InstallerMarker -Path $GIT_INSTALL_MARKER }
+                }
                 else { Write-Warn "Git installer exited with code $($proc.ExitCode)." }
             } catch {
                 Write-Warn "Failed to run Git installer: $($_.Exception.Message)"
@@ -750,12 +768,14 @@ function Install-ViaWinget {
 function Ensure-Node {
     $minMajor = 18
     $currentMajor = 0
+    $nodeWasMissing = $true
 
     $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
     if ($nodeCmd) {
         try {
             $ver = (& $nodeCmd.Source --version 2>&1) -replace '^v', ''
             $currentMajor = [int]($ver -split '\.')[0]
+            $nodeWasMissing = $false
         } catch {}
     }
 
@@ -805,6 +825,7 @@ function Ensure-Node {
             if ($proc.ExitCode -eq 0) {
                 Write-Ok "Node.js $nodeVer installed."
                 $msiOk = $true
+                if ($nodeWasMissing) { Write-InstallerMarker -Path $NODE_INSTALL_MARKER }
             } else {
                 Write-Warn "Node.js MSI exited with code $($proc.ExitCode)."
             }
@@ -825,7 +846,10 @@ function Ensure-Node {
                     -ArgumentList "install -e --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements --silent" `
                     -PassThru -NoNewWindow -ErrorAction Stop
                 $proc.WaitForExit(120000) | Out-Null
-                if ($proc.ExitCode -eq 0) { Write-Ok "Node.js installed via winget." }
+                if ($proc.ExitCode -eq 0) {
+                    Write-Ok "Node.js installed via winget."
+                    if ($nodeWasMissing) { Write-InstallerMarker -Path $NODE_INSTALL_MARKER }
+                }
                 else { Write-Warn "winget Node.js install exited with code $($proc.ExitCode)." }
             } catch {
                 Write-Warn "winget fallback failed: $($_.Exception.Message)"
