@@ -12,6 +12,23 @@
     Official: https://claude.ai/install.ps1
 #>
 
+# ── Self-elevation ────────────────────────────────────────────────────────────
+# Request admin rights once at startup so Git/Node installs run silently.
+if (($IsWindows -or $env:OS -eq 'Windows_NT') -and
+    -not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+         ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $pwsh = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh.exe" } else { "powershell.exe" }
+    $scriptPath = $PSCommandPath
+    if (-not $scriptPath) {
+        # irm | iex context: materialise the script to a temp file then re-launch
+        $scriptPath = "$env:TEMP\claude-code-installer-elevated.ps1"
+        $MyInvocation.MyCommand.ScriptBlock.ToString() | Set-Content $scriptPath -Encoding UTF8
+    }
+    Start-Process $pwsh -Verb RunAs `
+        -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$scriptPath`"" -Wait
+    exit
+}
+
 # Default parameters (iex context does not support param() blocks)
 if (-not (Get-Variable 'NoVerify'   -ErrorAction SilentlyContinue)) { $NoVerify   = $false }
 if (-not $env:CLAUDE_INSTALL_TIMEOUT) { $env:CLAUDE_INSTALL_TIMEOUT = "25" }
@@ -365,9 +382,6 @@ function Ensure-Git {
 
     Write-Info "Installing Git for Windows..."
 
-    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-        [Security.Principal.WindowsBuiltInRole]::Administrator)
-
     # Use npmmirror installer directly (fast for China users, no UAC with /CURRENTUSER for non-admin).
     # winget downloads Git from GitHub which is slow/blocked in China -- not worth the 60s wait.
     $gitVer = $GIT_FALLBACK_VER
@@ -427,13 +441,7 @@ function Ensure-Git {
         if ($downloaded) {
             Write-Info "  Installing Git silently..."
             try {
-                # Admin: system-wide install, no UAC needed (already elevated)
-                # Non-admin: /CURRENTUSER installs to %LOCALAPPDATA%, may still show UAC on some Git versions
-                $gitArgs = if ($isAdmin) {
-                    '/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"'
-                } else {
-                    '/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /CURRENTUSER /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"'
-                }
+                $gitArgs = '/VERYSILENT /NORESTART /NOCANCEL /SP- /SUPPRESSMSGBOXES /CLOSEAPPLICATIONS /COMPONENTS="icons,ext\reg\shellhere,assoc,assoc_sh"'
                 $proc = Start-Process -FilePath $tmpExe -ArgumentList $gitArgs -Wait -PassThru -ErrorAction Stop
                 if ($proc.ExitCode -eq 0) { Write-Ok "Git installed." }
                 else { Write-Warn "Git installer exited with code $($proc.ExitCode)." }
@@ -791,17 +799,9 @@ function Ensure-Node {
     if ($downloaded) {
         Write-Info "Installing Node.js silently..."
         try {
-            # Check if running as admin; if not, request elevation via -Verb RunAs
-            $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-            $startParams = @{
-                FilePath     = "msiexec.exe"
-                ArgumentList = "/i `"$tmpMsi`" /qn /norestart"
-                Wait         = $true
-                PassThru     = $true
-                ErrorAction  = "Stop"
-            }
-            if (-not $isAdmin) { $startParams["Verb"] = "RunAs" }
-            $proc = Start-Process @startParams
+            $proc = Start-Process msiexec.exe `
+                -ArgumentList "/i `"$tmpMsi`" /qn /norestart" `
+                -Wait -PassThru -ErrorAction Stop
             if ($proc.ExitCode -eq 0) {
                 Write-Ok "Node.js $nodeVer installed."
                 $msiOk = $true
