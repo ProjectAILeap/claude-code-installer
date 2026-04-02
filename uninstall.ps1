@@ -23,11 +23,21 @@ $CLAUDE_CONFIG_FILE = "$env:USERPROFILE\.claude.json"
 $NPM_PATH_MARKER   = "$env:USERPROFILE\.claude\npm-path-added"
 $GIT_INSTALL_MARKER = "$env:USERPROFILE\.claude\git-installed-by-installer"
 $NODE_INSTALL_MARKER = "$env:USERPROFILE\.claude\node-installed-by-installer"
+$CC_SWITCH_INSTALL_MARKER = "$env:USERPROFILE\.claude\cc-switch-installed-by-installer"
 
 function Write-Step { param($msg) Write-Host "`n>> $msg" -ForegroundColor Cyan }
 function Write-Ok   { param($msg) Write-Host "  [ OK ]  $msg" -ForegroundColor Green }
 function Write-Info { param($msg) Write-Host "  [INFO]  $msg" -ForegroundColor Gray }
 function Write-Warn { param($msg) Write-Host "  [WARN]  $msg" -ForegroundColor Yellow }
+
+function Wait-BeforeExit {
+    try {
+        Write-Host "Press any key to exit..." -ForegroundColor DarkGray
+        [void][System.Console]::ReadKey($true)
+    } catch {
+        Start-Sleep -Seconds 3
+    }
+}
 
 function Ask-YesNo {
     param(
@@ -188,13 +198,8 @@ function Uninstall-Node {
 }
 
 function Find-CcSwitch {
-    $registryPaths = @(
-        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
-        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
-    )
-    return Get-ItemProperty $registryPaths -ErrorAction SilentlyContinue |
-        Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -like "*CC Switch*" } |
-        Select-Object -First 1
+    param([string]$Signature = "")
+    return Find-RegistryEntry -Patterns @("*CC Switch*") -Signature $Signature
 }
 
 function Uninstall-CcSwitch {
@@ -214,6 +219,7 @@ function Uninstall-CcSwitch {
         }
         if ($proc.ExitCode -eq 0) {
             Write-Ok "CC Switch uninstalled."
+            Remove-Item $CC_SWITCH_INSTALL_MARKER -Force -ErrorAction SilentlyContinue
         } else {
             Write-Warn "msiexec exited with code $($proc.ExitCode)."
         }
@@ -305,23 +311,26 @@ function Main {
     }
 
     # Detect other components
-    $ccEntry      = Find-CcSwitch
+    $installerManagedCcSwitch = Test-InstallerManaged $CC_SWITCH_INSTALL_MARKER
+    $ccSignature = Get-MarkerSignature $CC_SWITCH_INSTALL_MARKER
+    $ccEntry      = Find-CcSwitch -Signature $ccSignature
     $installerManagedGit  = Test-InstallerManaged $GIT_INSTALL_MARKER
     $installerManagedNode = Test-InstallerManaged $NODE_INSTALL_MARKER
     $gitSignature  = Get-MarkerSignature $GIT_INSTALL_MARKER
     $nodeSignature = Get-MarkerSignature $NODE_INSTALL_MARKER
     $gitEntry     = Find-Git -Signature $gitSignature
     $nodeEntry    = Find-Node -Signature $nodeSignature
+    $legacyManagedNode = (-not $installerManagedNode) -and $nodeEntry -and ((Test-Path $NPM_PATH_MARKER) -or $isNpmInstall)
     $userPath     = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($null -eq $userPath) { $userPath = "" }
     $anthropicKeys = @("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL") |
         Where-Object { $null -ne [Environment]::GetEnvironmentVariable($_, "User") }
 
-    $hasInstall = $isWinget -or $isNpmInstall -or ($foundExes.Count -gt 0) -or `
-        ($installerManagedGit -and $gitEntry) -or ($installerManagedNode -and $nodeEntry)
+    $hasInstall = $isWinget -or $isNpmInstall -or ($foundExes.Count -gt 0) -or $gitEntry -or $nodeEntry
     if (-not $hasInstall) {
         Write-Warn "Claude Code does not appear to be installed."
         Write-Info "Nothing to remove."
+        Wait-BeforeExit
         exit 0
     }
 
@@ -331,13 +340,22 @@ function Main {
     if ($installedVersion) { Write-Info "Version:  v$installedVersion" }
     foreach ($exe in $foundExes) { Write-Info "Binary:   $exe" }
     if (Test-Path $DOWNLOAD_CACHE) { Write-Info "Cache:    $DOWNLOAD_CACHE" }
-    if ($ccEntry)  { Write-Info "CC Switch: $($ccEntry.DisplayName) v$($ccEntry.DisplayVersion)" }
+    if ($ccEntry) {
+        $ccLabel = if ($installerManagedCcSwitch) { "installed by this installer" } else { "installed, not installer-managed" }
+        Write-Info "CC Switch: $($ccEntry.DisplayName) v$($ccEntry.DisplayVersion) [$ccLabel]"
+    }
     if ($gitEntry) {
-        $gitLabel = if ($installerManagedGit) { "installed by this installer" } else { "kept (not installer-managed)" }
+        $gitLabel = if ($installerManagedGit) { "installed by this installer" } else { "installed, not installer-managed" }
         Write-Info "Git:       $($gitEntry.DisplayName) [$gitLabel]"
     }
     if ($nodeEntry) {
-        $nodeLabel = if ($installerManagedNode) { "installed by this installer" } else { "kept (not installer-managed)" }
+        $nodeLabel = if ($installerManagedNode) {
+            "installed by this installer"
+        } elseif ($legacyManagedNode) {
+            "possibly installed by an older installer version"
+        } else {
+            "installed, not installer-managed"
+        }
         Write-Info "Node.js:   $($nodeEntry.DisplayName) [$nodeLabel]"
     }
     if ($anthropicKeys) { Write-Info "ANTHROPIC_*: $($anthropicKeys -join ', ') (user env)" }
@@ -388,16 +406,20 @@ function Main {
         $removeConfig = Ask-YesNo "Remove Claude configuration (~\.claude\ and ~\.claude.json)?"
     }
     if ($ccEntry) {
-        $removeCcSwitch = Ask-YesNo "Remove CC Switch ($($ccEntry.DisplayName) v$($ccEntry.DisplayVersion))?"
+        $removeCcSwitch = Ask-YesNo "Remove CC Switch ($($ccEntry.DisplayName) v$($ccEntry.DisplayVersion))?" $installerManagedCcSwitch
     }
     if ($anthropicKeys) {
         $removeAnthropicEnv = Ask-YesNo "Remove ANTHROPIC_* variables from user environment ($($anthropicKeys -join ', '))?"
     }
-    if ($gitEntry -and $installerManagedGit) {
-        $removeGit = Ask-YesNo "Remove Git for Windows installed by this installer ($($gitEntry.DisplayName))?" $true
+    if ($gitEntry) {
+        $removeGit = Ask-YesNo "Remove Git for Windows ($($gitEntry.DisplayName))?" $installerManagedGit
     }
     if ($nodeEntry -and $installerManagedNode) {
         $removeNode = Ask-YesNo "Remove Node.js installed by this installer ($($nodeEntry.DisplayName))?" $true
+    } elseif ($nodeEntry -and $legacyManagedNode) {
+        $removeNode = Ask-YesNo "Remove Node.js likely installed by an older installer version ($($nodeEntry.DisplayName))?" $false
+    } elseif ($nodeEntry) {
+        $removeNode = Ask-YesNo "Remove Node.js ($($nodeEntry.DisplayName))?" $false
     }
 
     # Check anything selected
@@ -405,6 +427,7 @@ function Main {
                    -or $removeCcSwitch -or $removeAnthropicEnv -or $removeGit -or $removeNode
     if (-not $anySelected) {
         Write-Host "`nNothing selected. Exiting."
+        Wait-BeforeExit
         exit 0
     }
 
@@ -426,6 +449,7 @@ function Main {
 
     if (-not (Ask-YesNo "Proceed?")) {
         Write-Host "`nCancelled."
+        Wait-BeforeExit
         exit 0
     }
 
@@ -518,6 +542,7 @@ function Main {
     Write-Host ""
     Write-Host "  Uninstall complete." -ForegroundColor Green
     Write-Host ""
+    Wait-BeforeExit
 }
 
 Main

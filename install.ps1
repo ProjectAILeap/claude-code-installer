@@ -49,6 +49,7 @@ $CLAUDE_JSON      = "$env:USERPROFILE\.claude.json"
 $NPM_PATH_MARKER  = "$env:USERPROFILE\.claude\npm-path-added"
 $GIT_INSTALL_MARKER = "$env:USERPROFILE\.claude\git-installed-by-installer"
 $NODE_INSTALL_MARKER = "$env:USERPROFILE\.claude\node-installed-by-installer"
+$CC_SWITCH_INSTALL_MARKER = "$env:USERPROFILE\.claude\cc-switch-installed-by-installer"
 $GIT_MIN_VER      = [Version]"2.40.0"
 $GIT_FALLBACK_VER = "2.47.1"
 $GIT_FALLBACK_TAG = "v2.47.1.windows.1"
@@ -71,9 +72,19 @@ function Write-Ok   { param($msg) Write-Host "  [ OK ]  $msg" -ForegroundColor G
 function Write-Warn { param($msg) Write-Host "  [WARN]  $msg" -ForegroundColor Yellow }
 function Write-Err  { param($msg) Write-Host "  [ERR ]  $msg" -ForegroundColor Red }
 
+function Wait-BeforeExit {
+    try {
+        Write-Host "Press any key to exit..." -ForegroundColor DarkGray
+        [void][System.Console]::ReadKey($true)
+    } catch {
+        Start-Sleep -Seconds 3
+    }
+}
+
 function Exit-WithError {
     param($msg)
     Write-Err $msg
+    Wait-BeforeExit
     exit 1
 }
 
@@ -131,6 +142,10 @@ function Find-GitInstallEntry {
 
 function Find-NodeInstallEntry {
     return Find-RegistryEntryByPatterns @("Node.js*", "Node.js LTS*")
+}
+
+function Find-CcSwitchInstallEntry {
+    return Find-RegistryEntryByPatterns @("*CC Switch*")
 }
 
 # -- Mirror selection ----------------------------------------------------------
@@ -660,6 +675,7 @@ function Install-CcSwitch {
             -Wait -PassThru -ErrorAction Stop
         if ($proc.ExitCode -eq 0) {
             Write-Ok "CC Switch v$ccVer installed."
+            Write-InstallerMarker -Path $CC_SWITCH_INSTALL_MARKER -Signature (Get-InstallEntrySignature (Find-CcSwitchInstallEntry))
             return $true
         } else {
             Write-Warn "CC Switch MSI exited with code $($proc.ExitCode)."
@@ -1282,6 +1298,7 @@ function Main {
     Write-Host "  To upgrade:   powershell -ExecutionPolicy Bypass -File install.ps1"
     Write-Host "  To uninstall: powershell -ExecutionPolicy Bypass -File uninstall.ps1"
     Write-Host ""
+    Wait-BeforeExit
 }
 
 Main
