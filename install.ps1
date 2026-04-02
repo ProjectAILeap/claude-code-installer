@@ -787,14 +787,24 @@ function Ensure-Node {
         }
     }
 
+    $msiOk = $false
     if ($downloaded) {
         Write-Info "Installing Node.js silently..."
         try {
-            $proc = Start-Process -FilePath "msiexec.exe" `
-                -ArgumentList "/i `"$tmpMsi`" /qn /norestart" `
-                -Wait -PassThru -ErrorAction Stop
+            # Check if running as admin; if not, request elevation via -Verb RunAs
+            $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            $startParams = @{
+                FilePath     = "msiexec.exe"
+                ArgumentList = "/i `"$tmpMsi`" /qn /norestart"
+                Wait         = $true
+                PassThru     = $true
+                ErrorAction  = "Stop"
+            }
+            if (-not $isAdmin) { $startParams["Verb"] = "RunAs" }
+            $proc = Start-Process @startParams
             if ($proc.ExitCode -eq 0) {
                 Write-Ok "Node.js $nodeVer installed."
+                $msiOk = $true
             } else {
                 Write-Warn "Node.js MSI exited with code $($proc.ExitCode)."
             }
@@ -804,7 +814,10 @@ function Ensure-Node {
         Remove-Item $tmpMsi -Force -ErrorAction SilentlyContinue
     } else {
         Write-Warn "Node.js download failed."
-        Write-Warn "Install winget fallback..."
+    }
+
+    if (-not $msiOk) {
+        Write-Info "Trying winget fallback for Node.js..."
         $wingetExe = Get-WingetExe
         if ($wingetExe) {
             try {
@@ -813,11 +826,13 @@ function Ensure-Node {
                     -PassThru -NoNewWindow -ErrorAction Stop
                 $proc.WaitForExit(120000) | Out-Null
                 if ($proc.ExitCode -eq 0) { Write-Ok "Node.js installed via winget." }
+                else { Write-Warn "winget Node.js install exited with code $($proc.ExitCode)." }
             } catch {
-                Write-Warn "winget fallback failed. Install Node.js 18+ manually: https://nodejs.org"
+                Write-Warn "winget fallback failed: $($_.Exception.Message)"
+                Write-Warn "Please install Node.js 18+ manually: https://nodejs.org"
             }
         } else {
-            Write-Warn "Install Node.js 18+ manually: https://nodejs.org"
+            Write-Warn "winget not found. Please install Node.js 18+ manually: https://nodejs.org"
         }
     }
 

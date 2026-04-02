@@ -911,6 +911,25 @@ ensure_node() {
         fi
     fi
 
+    # If node is still missing or too old, fall back to nvm + latest LTS
+    current_major="$(node_major_version)"
+    if ! command -v node &>/dev/null || (( current_major < min_major )); then
+        local _nvm_ver="v0.40.3"
+        local _raw_mirror="${GITHUB_MIRROR/github.com/raw.githubusercontent.com}"
+        info "System Node.js missing or too old, trying nvm ${_nvm_ver}..."
+        export NVM_DIR="${HOME}/.nvm"
+        if curl -fsSL --connect-timeout 30 --max-time 120 \
+             "${_raw_mirror}/nvm-sh/nvm/${_nvm_ver}/install.sh" | bash 2>/dev/null; then
+            [ -s "${NVM_DIR}/nvm.sh" ] && source "${NVM_DIR}/nvm.sh" || true
+            if command -v nvm &>/dev/null; then
+                nvm install --lts 2>&1 | grep -E '(Now using|installed|error)' || true
+                nvm use --lts 2>/dev/null || true
+            fi
+        else
+            warn "nvm install failed."
+        fi
+    fi
+
     command -v node &>/dev/null || die "Node.js installation failed. Install Node.js 18+ and retry."
     current_major="$(node_major_version)"
     (( current_major >= min_major )) || die "Node.js $(node --version 2>/dev/null) is too old. Install Node.js 18+ and retry."
@@ -943,6 +962,7 @@ check_git_version_macos() {
 # ── npm install path ──────────────────────────────────────────────────────
 # Bug 2 fix: reuses write_claude_json() which uses perl on macOS (no python3).
 install_via_npm() {
+    select_mirror
     ensure_node
 
     if [[ "${PLATFORM}" == darwin-* ]]; then

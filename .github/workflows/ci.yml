@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  bash:
+    name: Bash (layers 1, 3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+      - name: Run tests
+        run: bash tests/test.sh 1 3
+
+  powershell:
+    name: PowerShell (layers 1, 3)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: |
+          docker run --rm \
+            -v "$PWD:/scripts" \
+            mcr.microsoft.com/powershell \
+            pwsh -NonInteractive -File /scripts/tests/test.ps1 1 3

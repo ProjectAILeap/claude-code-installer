@@ -22,7 +22,7 @@ get_latest_version    # 从 GitHub API 获取最新版本号
 check_installed_version  # claude --version 检查是否已是最新
 选择安装方式          # [1] Direct binary / [2] npm
 check_git             # 二进制方式下 Linux 检查 Git；npm 方式下检查 Git 可用性
-select_mirror         # 二进制方式：并发测速 5 个 GitHub 镜像
+select_mirror         # 二进制方式：并发测速 6 个 GitHub 镜像
 download_and_verify   # 二进制方式：按 MIRROR_ORDER 顺序下载，manifest.json 校验
 run_claude_install    # 二进制方式：执行 claude install [TARGET]，支持 auto|force|skip，默认 25s 超时后降级
 install_via_npm       # npm 方式：确保 Node.js >= 18，配置 npmmirror，全局安装 claude
@@ -32,18 +32,14 @@ configure_api_key     # 配置 ANTHROPIC_API_KEY
 
 ### 镜像策略
 
-- `install.sh` 仅对 GitHub 镜像并发测速，按延迟排序存入 `MIRROR_ORDER[]`
-- 下载时按顺序尝试，任意一个失败自动换下一个
-- CC Switch 始终从 `GITHUB_MIRROR`（最快的非 GCS 源）下载
+- 6 个 GitHub 镜像并发测速，按延迟排序存入 `MIRROR_ORDER[]`，下载时依序尝试
+- GCS（`storage.googleapis.com`）**仅定义为变量，不参与测速和下载**（中国大陆被屏蔽）
+- CC Switch 始终从 `GITHUB_MIRROR`（最快的非 GCS 镜像）下载
 
 ### 二进制来源与校验
 
-| 来源 | 二进制 URL 格式 | 校验文件 |
-|------|----------------|----------|
-| GCS（官方） | `$GCS_BUCKET/$VERSION/$PLATFORM/claude` | `$GCS_BUCKET/$VERSION/manifest.json` |
-| GitHub 镜像 | `$MIRROR/$REPO/releases/download/v$VERSION/claude-$VERSION-$PLATFORM` | `$MIRROR/$REPO/releases/download/v$VERSION/manifest.json` |
-
-两者均使用 `manifest.json`，格式相同：`platforms.$PLATFORM.checksum`（SHA-256）。
+- 来源：`$MIRROR/ProjectAILeap/claude-code-releases/releases/download/v$VERSION/claude-$VERSION-$PLATFORM`
+- 校验：同一镜像下的 `manifest-$VERSION.json`，字段 `platforms.$PLATFORM.checksum`（SHA-256）
 
 ### claude install vs 降级安装
 
@@ -103,13 +99,7 @@ configure_api_key     # 配置 ANTHROPIC_API_KEY
 
 ## 测试
 
-详见 [`tests/TESTING.md`](tests/TESTING.md)（层级说明、运行命令、历史记录）。
-
-当前测试覆盖：
+详见 [`tests/TESTING.md`](tests/TESTING.md)。
 
 - `tests/test.sh`：静态检查、函数级单测、GCS 降级、非法参数、npm 安装模拟、Docker 集成、升级检测、原生卸载、npm 卸载
 - `tests/test.ps1`：`install.ps1` / `uninstall.ps1` 语法检查、网络函数单测、逻辑模拟
-
-最近一次完整回归：
-
-- 2026-03-31：`bash tests/test.sh` 全部通过（含 Docker Ubuntu / Alpine 与 PowerShell Docker 层）

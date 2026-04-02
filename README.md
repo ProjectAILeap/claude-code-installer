@@ -77,22 +77,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 
 ---
 
-## 安装过程说明
-
-脚本会自动完成以下步骤（二进制方式）：
-
-| 步骤 | 说明 |
-|------|------|
-| 1. 检测版本 | 从 GitHub Releases 获取最新版本号 |
-| 2. 选择安装方式 | 交互提示：直接二进制或 npm |
-| 3. 选择镜像 | 自动并行测速，选最快可用的 GitHub 镜像源（二进制方式） |
-| 4. 安装 Git（仅 Windows） | 未安装时自动下载安装 Git for Windows（无需管理员权限） |
-| 5. 下载二进制 | 下载 Claude Code 官方二进制，验证 SHA-256，缓存至 `~/.claude/downloads` |
-| 6. 自动安装 | 默认以 `CLAUDE_INSTALL_MODE=auto` 执行安装：可直连时优先运行 `claude install`，不可直连或失败时自动降级到 fallback |
-| 7. 安装 CC Switch（可选） | 询问是否安装 API Provider 切换工具 |
-| 8. 配置 API 访问 | 根据网络环境自动引导配置，确保能直接进入 Claude Code |
-
-### 安装模式与超时
+## 安装模式与超时
 
 - 默认模式：`CLAUDE_INSTALL_MODE=auto`
 - 可选模式：`auto` / `force` / `skip`
@@ -133,7 +118,7 @@ $env:CLAUDE_INSTALL_MODE="force"; $env:CLAUDE_INSTALL_TIMEOUT="40"; powershell -
 
 ## 镜像加速说明
 
-脚本内置 5 个 GitHub 镜像源，自动并行测速选最快可用源（无需手动配置）：
+脚本内置 6 个 GitHub 镜像源，自动并行测速选最快可用源（无需手动配置）：
 
 | 镜像 | 类型 |
 |------|------|
@@ -141,6 +126,8 @@ $env:CLAUDE_INSTALL_MODE="force"; $env:CLAUDE_INSTALL_TIMEOUT="40"; powershell -
 | ghfast.top | 代理镜像 |
 | gh-proxy.com | 代理镜像 |
 | mirror.ghproxy.com | 代理镜像 |
+| ghproxy.net | 代理镜像 |
+| hub.gitmirror.com | 代理镜像 |
 
 ---
 
@@ -252,40 +239,13 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1
 
 ---
 
-## 测试 / Testing
-
-测试说明见 [`tests/TESTING.md`](tests/TESTING.md)。
-
-常用命令：
-
-```bash
-# Unix 主测试（含 Docker 与 PowerShell Docker 层）
-bash tests/test.sh
-
-# 仅本地快速检查
-bash tests/test.sh 1 2 3
-
-# PowerShell 测试（Linux/macOS 通过 Docker）
-docker run --rm -v "$PWD:/scripts" mcr.microsoft.com/powershell \
-  pwsh -NonInteractive -File /scripts/tests/test.ps1 1 2 3
-```
-
-当前测试已覆盖：
-
-- `install.sh` 的版本检测、镜像选择、GCS 降级、非法参数校验
-- npm 安装路径（binary / PATH / marker）
-- `uninstall.sh` 的原生卸载、未安装卸载、npm 卸载（package / PATH / marker）
-- `install.ps1` / `uninstall.ps1` 的语法检查、函数级单测与逻辑模拟
-
----
-
 ## 常见问题
 
 **Q: 直接二进制和 npm 方式哪个更好？**
 > 直接二进制方式（默认）更推荐：SHA-256 校验、自动镜像选速、支持官方自动更新路径。npm 方式适合已有 Node.js 环境、或二进制下载受限时使用。两种方式不可同时安装同一版本，建议统一使用一种。
 
 **Q: 需要管理员权限吗？**
-> 不需要。Windows 的 Git 和 Claude Code 均安装到用户目录，macOS/Linux 默认安装到 `~/.local/bin`，均无需 root/管理员权限。
+> 二进制方式不需要，Windows 的 Git 和 Claude Code 均安装到用户目录，macOS/Linux 默认安装到 `~/.local/bin`。npm 方式若系统未安装 Node.js，脚本会通过 MSI 自动安装并触发 UAC 提权弹窗，选"是"即可；已有 Node.js 18+ 则无需任何权限。
 
 **Q: fallback 安装和 `claude install` 有什么区别？**
 > `claude install` 成功时通常保留官方 shell integration 和自动更新能力；fallback 是直接复制二进制，优点是稳定、快，缺点是没有自动更新，需要重新运行安装脚本升级。
