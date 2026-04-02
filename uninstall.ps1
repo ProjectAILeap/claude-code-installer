@@ -416,16 +416,17 @@ function Main {
     }
 
     foreach ($exe in $foundExes) {
-        if (Ask-YesNo "Remove Claude Code binary ($exe)?") {
+        $dir = Split-Path $exe -Parent
+        $isWingetLink = $dir -like "$env:LOCALAPPDATA\Microsoft\WinGet\Links*"
+        if (Ask-YesNo "Remove Claude Code binary ($exe)?" $true) {
             $removeBinaries += $exe
-            $dir = Split-Path $exe -Parent
             if (Test-Path $dir) {
-                if (Ask-YesNo "  Also remove directory ($dir)?") {
+                if (Ask-YesNo "  Also remove directory ($dir)?" $false) {
                     $removeDirs += $dir
                 }
             }
             if ($userPath.Contains($dir) -and ($removePathDirs -notcontains $dir)) {
-                if (Ask-YesNo "  Remove $dir from user PATH?") {
+                if (Ask-YesNo "  Remove $dir from user PATH?" $false) {
                     $removePathDirs += $dir
                 }
             }
@@ -433,7 +434,7 @@ function Main {
     }
 
     if (Test-Path $DOWNLOAD_CACHE) {
-        $removeCache = Ask-YesNo "Remove downloads cache ($DOWNLOAD_CACHE)?"
+        $removeCache = Ask-YesNo "Remove downloads cache ($DOWNLOAD_CACHE)?" $true
     }
     if ((Test-Path $CLAUDE_CONFIG_DIR) -or (Test-Path $CLAUDE_CONFIG_FILE)) {
         $removeConfig = Ask-YesNo "Remove Claude configuration (~\.claude\ and ~\.claude.json)?"

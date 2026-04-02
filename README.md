@@ -38,13 +38,17 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/cl
 
 ### Windows
 
-在 PowerShell 中运行：
+请在管理员 PowerShell 中运行。
+
+直连（境外网络 / 有代理）：
 
 ```powershell
-# 直连（境外网络 / 有代理）
 irm https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/install.ps1 | iex
+```
 
-# 镜像加速（中国大陆推荐）
+镜像加速（中国大陆推荐）：
+
+```powershell
 irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/install.ps1 | iex
 ```
 
@@ -181,13 +185,17 @@ curl -fsSL https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer
 
 ### Windows
 
-在 PowerShell 中运行：
+建议在管理员 PowerShell 中运行。
+
+直连：
 
 ```powershell
-# 直连
 irm https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/uninstall.ps1 | iex
+```
 
-# 镜像加速（中国大陆推荐）
+镜像加速（中国大陆推荐）：
+
+```powershell
 irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/uninstall.ps1 | iex
 ```
 
@@ -245,7 +253,7 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1
 > 直接二进制方式（默认）更推荐：SHA-256 校验、自动镜像选速、支持官方自动更新路径。npm 方式适合已有 Node.js 环境、或二进制下载受限时使用。两种方式不可同时安装同一版本，建议统一使用一种。
 
 **Q: 需要管理员权限吗？**
-> 二进制方式不需要，Windows 的 Git 和 Claude Code 均安装到用户目录，macOS/Linux 默认安装到 `~/.local/bin`。npm 方式若系统未安装 Node.js，脚本会通过 MSI 自动安装并触发 UAC 提权弹窗，选"是"即可；已有 Node.js 18+ 则无需任何权限。
+> macOS/Linux 默认不需要。Windows 上建议直接用管理员 PowerShell 运行安装/卸载脚本，这样 Git、Node.js、CC Switch 以及 MSI/winget 相关步骤更稳定，也避免中途重复弹 UAC。
 
 **Q: fallback 安装和 `claude install` 有什么区别？**
 > `claude install` 成功时通常保留官方 shell integration 和自动更新能力；fallback 是直接复制二进制，优点是稳定、快，缺点是没有自动更新，需要重新运行安装脚本升级。
