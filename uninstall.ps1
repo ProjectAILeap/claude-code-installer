@@ -21,6 +21,8 @@ $DOWNLOAD_CACHE    = "$env:USERPROFILE\.claude\downloads"
 $CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude"
 $CLAUDE_CONFIG_FILE = "$env:USERPROFILE\.claude.json"
 $NPM_PATH_MARKER   = "$env:USERPROFILE\.claude\npm-path-added"
+$GIT_INSTALL_MARKER = "$env:USERPROFILE\.claude\git-installed-by-installer"
+$NODE_INSTALL_MARKER = "$env:USERPROFILE\.claude\node-installed-by-installer"
 
 function Write-Step { param($msg) Write-Host "`n>> $msg" -ForegroundColor Cyan }
 function Write-Ok   { param($msg) Write-Host "  [ OK ]  $msg" -ForegroundColor Green }
@@ -28,9 +30,41 @@ function Write-Info { param($msg) Write-Host "  [INFO]  $msg" -ForegroundColor G
 function Write-Warn { param($msg) Write-Host "  [WARN]  $msg" -ForegroundColor Yellow }
 
 function Ask-YesNo {
-    param([string]$Prompt)
-    $ans = Read-Host "$Prompt [y/N]"
+    param(
+        [string]$Prompt,
+        [bool]$DefaultYes = $false
+    )
+    $suffix = if ($DefaultYes) { "[Y/n]" } else { "[y/N]" }
+    $ans = Read-Host "$Prompt $suffix"
+    if ([string]::IsNullOrWhiteSpace($ans)) { return $DefaultYes }
     return ($ans -match '^[Yy]')
+}
+
+function Test-InstallerManaged {
+    param([string]$MarkerPath)
+    return (Test-Path $MarkerPath)
+}
+
+function Get-MarkerSignature {
+    param([string]$MarkerPath)
+    if (-not (Test-Path $MarkerPath)) { return "" }
+    try {
+        return (Get-Content $MarkerPath -Raw -ErrorAction Stop).Trim()
+    } catch {
+        return ""
+    }
+}
+
+function Get-InstallEntrySignature {
+    param($Entry)
+    if (-not $Entry) { return "" }
+
+    $parts = @()
+    if ($Entry.PSChildName)      { $parts += "Key=$($Entry.PSChildName)" }
+    if ($Entry.DisplayName)      { $parts += "Name=$($Entry.DisplayName)" }
+    if ($Entry.DisplayVersion)   { $parts += "Version=$($Entry.DisplayVersion)" }
+    if ($Entry.UninstallString)  { $parts += "Uninstall=$($Entry.UninstallString)" }
+    return ($parts -join "`n")
 }
 
 function Remove-FromUserPath {
@@ -52,17 +86,42 @@ function Remove-AnthropicEnv {
     }
 }
 
-function Find-Git {
+function Find-RegistryEntry {
+    param(
+        [string[]]$Patterns,
+        [string]$Signature = ""
+    )
     $paths = @(
         "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
         "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
         "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
     )
-    return Get-ItemProperty $paths -ErrorAction SilentlyContinue |
-        Where-Object { $_.PSObject.Properties['DisplayName'] -and
-            ($_.DisplayName -like "Git version *" -or $_.DisplayName -eq "Git" -or
-             $_.DisplayName -like "Git for Windows*") } |
-        Select-Object -First 1
+    $entries = Get-ItemProperty $paths -ErrorAction SilentlyContinue |
+        Where-Object {
+            $entry = $_
+            if (-not $entry.PSObject.Properties['DisplayName']) { return $false }
+            foreach ($pattern in $Patterns) {
+                if ($entry.DisplayName -like $pattern) { return $true }
+            }
+            return $false
+        }
+
+    if ($Signature) {
+        $matched = $entries | Where-Object { (Get-InstallEntrySignature $_) -eq $Signature } | Select-Object -First 1
+        if ($matched) { return $matched }
+    }
+
+    return $entries | Select-Object -First 1
+}
+
+function Find-Git {
+    param([string]$Signature = "")
+    return Find-RegistryEntry -Patterns @("Git version *", "Git", "Git for Windows*") -Signature $Signature
+}
+
+function Find-Node {
+    param([string]$Signature = "")
+    return Find-RegistryEntry -Patterns @("Node.js*", "Node.js LTS*") -Signature $Signature
 }
 
 function Uninstall-Git {
@@ -85,6 +144,7 @@ function Uninstall-Git {
                 -Wait -PassThru -NoNewWindow -ErrorAction Stop
             if ($proc.ExitCode -eq 0) {
                 Write-Ok "Git uninstalled."
+                Remove-Item $GIT_INSTALL_MARKER -Force -ErrorAction SilentlyContinue
             } else {
                 Write-Warn "Git uninstaller exited with code $($proc.ExitCode)."
             }
@@ -93,6 +153,37 @@ function Uninstall-Git {
         }
     } catch {
         Write-Warn "Failed to uninstall Git: $($_.Exception.Message)"
+    }
+}
+
+function Uninstall-Node {
+    param($NodeEntry)
+    Write-Info "Uninstalling Node.js..."
+    try {
+        $productCode = $NodeEntry.PSChildName
+        if ($productCode -match '^\{') {
+            $proc = Start-Process -FilePath "msiexec.exe" `
+                -ArgumentList "/x `"$productCode`" /qn /norestart" `
+                -Wait -PassThru -ErrorAction Stop
+        } else {
+            $uninstStr = $NodeEntry.UninstallString
+            if ("$uninstStr" -match 'msiexec(\.exe)?') {
+                $proc = Start-Process -FilePath "msiexec.exe" `
+                    -ArgumentList (($uninstStr -replace '(?i)msiexec(\.exe)?\s*', '') + " /qn /norestart") `
+                    -Wait -PassThru -ErrorAction Stop
+            } else {
+                Write-Warn "Could not determine Node.js uninstall command. Please uninstall manually."
+                return
+            }
+        }
+        if ($proc.ExitCode -eq 0) {
+            Write-Ok "Node.js uninstalled."
+            Remove-Item $NODE_INSTALL_MARKER -Force -ErrorAction SilentlyContinue
+        } else {
+            Write-Warn "Node.js uninstaller exited with code $($proc.ExitCode)."
+        }
+    } catch {
+        Write-Warn "Failed to uninstall Node.js: $($_.Exception.Message)"
     }
 }
 
@@ -204,13 +295,6 @@ function Main {
         }
     }
 
-    $hasInstall = $isWinget -or $isNpmInstall -or ($foundExes.Count -gt 0)
-    if (-not $hasInstall) {
-        Write-Warn "Claude Code does not appear to be installed."
-        Write-Info "Nothing to remove."
-        exit 0
-    }
-
     # Detect version
     $installedVersion = ""
     if ($claudeCmd) {
@@ -222,11 +306,24 @@ function Main {
 
     # Detect other components
     $ccEntry      = Find-CcSwitch
-    $gitEntry     = Find-Git
+    $installerManagedGit  = Test-InstallerManaged $GIT_INSTALL_MARKER
+    $installerManagedNode = Test-InstallerManaged $NODE_INSTALL_MARKER
+    $gitSignature  = Get-MarkerSignature $GIT_INSTALL_MARKER
+    $nodeSignature = Get-MarkerSignature $NODE_INSTALL_MARKER
+    $gitEntry     = Find-Git -Signature $gitSignature
+    $nodeEntry    = Find-Node -Signature $nodeSignature
     $userPath     = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($null -eq $userPath) { $userPath = "" }
     $anthropicKeys = @("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL") |
         Where-Object { $null -ne [Environment]::GetEnvironmentVariable($_, "User") }
+
+    $hasInstall = $isWinget -or $isNpmInstall -or ($foundExes.Count -gt 0) -or `
+        ($installerManagedGit -and $gitEntry) -or ($installerManagedNode -and $nodeEntry)
+    if (-not $hasInstall) {
+        Write-Warn "Claude Code does not appear to be installed."
+        Write-Info "Nothing to remove."
+        exit 0
+    }
 
     Write-Step "Detected installation"
     if ($isWinget)         { Write-Info "winget:   Claude Code (Anthropic.ClaudeCode)" }
@@ -235,7 +332,14 @@ function Main {
     foreach ($exe in $foundExes) { Write-Info "Binary:   $exe" }
     if (Test-Path $DOWNLOAD_CACHE) { Write-Info "Cache:    $DOWNLOAD_CACHE" }
     if ($ccEntry)  { Write-Info "CC Switch: $($ccEntry.DisplayName) v$($ccEntry.DisplayVersion)" }
-    if ($gitEntry) { Write-Info "Git:       $($gitEntry.DisplayName)" }
+    if ($gitEntry) {
+        $gitLabel = if ($installerManagedGit) { "installed by this installer" } else { "kept (not installer-managed)" }
+        Write-Info "Git:       $($gitEntry.DisplayName) [$gitLabel]"
+    }
+    if ($nodeEntry) {
+        $nodeLabel = if ($installerManagedNode) { "installed by this installer" } else { "kept (not installer-managed)" }
+        Write-Info "Node.js:   $($nodeEntry.DisplayName) [$nodeLabel]"
+    }
     if ($anthropicKeys) { Write-Info "ANTHROPIC_*: $($anthropicKeys -join ', ') (user env)" }
     Write-Host ""
 
@@ -250,6 +354,7 @@ function Main {
     $removeCcSwitch    = $false
     $removeAnthropicEnv = $false
     $removeGit         = $false
+    $removeNode        = $false
 
     if ($isWinget) {
         $removeWinget = Ask-YesNo "Remove Claude Code (winget)?"
@@ -288,13 +393,16 @@ function Main {
     if ($anthropicKeys) {
         $removeAnthropicEnv = Ask-YesNo "Remove ANTHROPIC_* variables from user environment ($($anthropicKeys -join ', '))?"
     }
-    if ($gitEntry) {
-        $removeGit = Ask-YesNo "Remove Git for Windows ($($gitEntry.DisplayName))? [default: No]"
+    if ($gitEntry -and $installerManagedGit) {
+        $removeGit = Ask-YesNo "Remove Git for Windows installed by this installer ($($gitEntry.DisplayName))?" $true
+    }
+    if ($nodeEntry -and $installerManagedNode) {
+        $removeNode = Ask-YesNo "Remove Node.js installed by this installer ($($nodeEntry.DisplayName))?" $true
     }
 
     # Check anything selected
     $anySelected = $removeWinget -or $removeNpm -or ($removeBinaries.Count -gt 0) -or $removeCache -or $removeConfig `
-                   -or $removeCcSwitch -or $removeAnthropicEnv -or $removeGit
+                   -or $removeCcSwitch -or $removeAnthropicEnv -or $removeGit -or $removeNode
     if (-not $anySelected) {
         Write-Host "`nNothing selected. Exiting."
         exit 0
@@ -313,6 +421,7 @@ function Main {
     if ($removeCcSwitch)    { Write-Host "  - CC Switch" }
     if ($removeAnthropicEnv) { Write-Host "  - ANTHROPIC_* user environment variables" }
     if ($removeGit)         { Write-Host "  - Git for Windows ($($gitEntry.DisplayName))" }
+    if ($removeNode)        { Write-Host "  - Node.js ($($nodeEntry.DisplayName))" }
     Write-Host ""
 
     if (-not (Ask-YesNo "Proceed?")) {
@@ -400,6 +509,10 @@ function Main {
 
     if ($removeGit -and $gitEntry) {
         Uninstall-Git -GitEntry $gitEntry
+    }
+
+    if ($removeNode -and $nodeEntry) {
+        Uninstall-Node -NodeEntry $nodeEntry
     }
 
     Write-Host ""

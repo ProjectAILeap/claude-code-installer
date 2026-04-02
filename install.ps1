@@ -78,13 +78,59 @@ function Exit-WithError {
 }
 
 function Write-InstallerMarker {
-    param([string]$Path)
+    param(
+        [string]$Path,
+        [string]$Signature
+    )
     try {
         New-Item -ItemType Directory -Force -Path (Split-Path $Path -Parent) | Out-Null
-        Set-Content -Path $Path -Value "installed-by-claude-code-installer" -Encoding ASCII -Force
+        if ($Signature) {
+            Set-Content -Path $Path -Value $Signature -Encoding UTF8 -Force
+        } else {
+            Set-Content -Path $Path -Value "installed-by-claude-code-installer" -Encoding ASCII -Force
+        }
     } catch {
         Write-Warn "Could not write installer marker: $Path"
     }
+}
+
+function Get-InstallEntrySignature {
+    param($Entry)
+    if (-not $Entry) { return "" }
+
+    $parts = @()
+    if ($Entry.PSChildName)      { $parts += "Key=$($Entry.PSChildName)" }
+    if ($Entry.DisplayName)      { $parts += "Name=$($Entry.DisplayName)" }
+    if ($Entry.DisplayVersion)   { $parts += "Version=$($Entry.DisplayVersion)" }
+    if ($Entry.UninstallString)  { $parts += "Uninstall=$($Entry.UninstallString)" }
+    return ($parts -join "`n")
+}
+
+function Find-RegistryEntryByPatterns {
+    param([string[]]$Patterns)
+    $paths = @(
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    return Get-ItemProperty $paths -ErrorAction SilentlyContinue |
+        Where-Object {
+            $entry = $_
+            if (-not $entry.PSObject.Properties['DisplayName']) { return $false }
+            foreach ($pattern in $Patterns) {
+                if ($entry.DisplayName -like $pattern) { return $true }
+            }
+            return $false
+        } |
+        Select-Object -First 1
+}
+
+function Find-GitInstallEntry {
+    return Find-RegistryEntryByPatterns @("Git version *", "Git", "Git for Windows*")
+}
+
+function Find-NodeInstallEntry {
+    return Find-RegistryEntryByPatterns @("Node.js*", "Node.js LTS*")
 }
 
 # -- Mirror selection ----------------------------------------------------------
@@ -460,7 +506,9 @@ function Ensure-Git {
                 $proc = Start-Process -FilePath $tmpExe -ArgumentList $gitArgs -Wait -PassThru -ErrorAction Stop
                 if ($proc.ExitCode -eq 0) {
                     Write-Ok "Git installed."
-                    if ($gitWasMissing) { Write-InstallerMarker -Path $GIT_INSTALL_MARKER }
+                    if ($gitWasMissing) {
+                        Write-InstallerMarker -Path $GIT_INSTALL_MARKER -Signature (Get-InstallEntrySignature (Find-GitInstallEntry))
+                    }
                 }
                 else { Write-Warn "Git installer exited with code $($proc.ExitCode)." }
             } catch {
@@ -825,7 +873,9 @@ function Ensure-Node {
             if ($proc.ExitCode -eq 0) {
                 Write-Ok "Node.js $nodeVer installed."
                 $msiOk = $true
-                if ($nodeWasMissing) { Write-InstallerMarker -Path $NODE_INSTALL_MARKER }
+                if ($nodeWasMissing) {
+                    Write-InstallerMarker -Path $NODE_INSTALL_MARKER -Signature (Get-InstallEntrySignature (Find-NodeInstallEntry))
+                }
             } else {
                 Write-Warn "Node.js MSI exited with code $($proc.ExitCode)."
             }
@@ -848,7 +898,9 @@ function Ensure-Node {
                 $proc.WaitForExit(120000) | Out-Null
                 if ($proc.ExitCode -eq 0) {
                     Write-Ok "Node.js installed via winget."
-                    if ($nodeWasMissing) { Write-InstallerMarker -Path $NODE_INSTALL_MARKER }
+                    if ($nodeWasMissing) {
+                        Write-InstallerMarker -Path $NODE_INSTALL_MARKER -Signature (Get-InstallEntrySignature (Find-NodeInstallEntry))
+                    }
                 }
                 else { Write-Warn "winget Node.js install exited with code $($proc.ExitCode)." }
             } catch {
