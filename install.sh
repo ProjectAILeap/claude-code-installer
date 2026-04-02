@@ -915,11 +915,14 @@ ensure_node() {
     current_major="$(node_major_version)"
     if ! command -v node &>/dev/null || (( current_major < min_major )); then
         local _nvm_ver="v0.40.3"
+        # GITHUB_MIRROR may be unset on the npm path; select it on demand
+        [[ -z "${GITHUB_MIRROR}" ]] && select_mirror
         local _raw_mirror="${GITHUB_MIRROR/github.com/raw.githubusercontent.com}"
         info "System Node.js missing or too old, trying nvm ${_nvm_ver}..."
         export NVM_DIR="${HOME}/.nvm"
         if curl -fsSL --connect-timeout 30 --max-time 120 \
              "${_raw_mirror}/nvm-sh/nvm/${_nvm_ver}/install.sh" | bash 2>/dev/null; then
+            # shellcheck source=/dev/null
             [ -s "${NVM_DIR}/nvm.sh" ] && source "${NVM_DIR}/nvm.sh" || true
             if command -v nvm &>/dev/null; then
                 nvm install --lts 2>&1 | grep -E '(Now using|installed|error)' || true
@@ -962,7 +965,6 @@ check_git_version_macos() {
 # ── npm install path ──────────────────────────────────────────────────────
 # Bug 2 fix: reuses write_claude_json() which uses perl on macOS (no python3).
 install_via_npm() {
-    select_mirror
     ensure_node
 
     if [[ "${PLATFORM}" == darwin-* ]]; then
