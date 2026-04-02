@@ -39,6 +39,39 @@ function Wait-BeforeExit {
     }
 }
 
+function Test-IsAdministrator {
+    return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).
+        IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Invoke-ProcessWithElevationRetry {
+    param(
+        [string]$FilePath,
+        [string]$ArgumentList,
+        [string]$Label,
+        [switch]$NoNewWindow
+    )
+
+    $startParams = @{
+        FilePath    = $FilePath
+        ArgumentList = $ArgumentList
+        Wait        = $true
+        PassThru    = $true
+        ErrorAction = "Stop"
+    }
+    if ($NoNewWindow) { $startParams["NoNewWindow"] = $true }
+
+    $proc = Start-Process @startParams
+    if ($proc.ExitCode -eq 1603 -and -not (Test-IsAdministrator)) {
+        Write-Warn "$Label exited with code 1603. Retrying with elevation..."
+        $proc = Start-Process -FilePath $FilePath `
+            -ArgumentList $ArgumentList `
+            -Verb RunAs `
+            -Wait -PassThru -ErrorAction Stop
+    }
+    return $proc
+}
+
 function Ask-YesNo {
     param(
         [string]$Prompt,
@@ -149,9 +182,9 @@ function Uninstall-Git {
             }
         }
         if (Test-Path $uninstExe) {
-            $proc = Start-Process -FilePath $uninstExe `
+            $proc = Invoke-ProcessWithElevationRetry -FilePath $uninstExe `
                 -ArgumentList "/VERYSILENT /NORESTART /SUPPRESSMSGBOXES" `
-                -Wait -PassThru -NoNewWindow -ErrorAction Stop
+                -Label "Git uninstaller" -NoNewWindow
             if ($proc.ExitCode -eq 0) {
                 Write-Ok "Git uninstalled."
                 Remove-Item $GIT_INSTALL_MARKER -Force -ErrorAction SilentlyContinue
@@ -172,15 +205,15 @@ function Uninstall-Node {
     try {
         $productCode = $NodeEntry.PSChildName
         if ($productCode -match '^\{') {
-            $proc = Start-Process -FilePath "msiexec.exe" `
+            $proc = Invoke-ProcessWithElevationRetry -FilePath "msiexec.exe" `
                 -ArgumentList "/x `"$productCode`" /qn /norestart" `
-                -Wait -PassThru -ErrorAction Stop
+                -Label "Node.js uninstaller"
         } else {
             $uninstStr = $NodeEntry.UninstallString
             if ("$uninstStr" -match 'msiexec(\.exe)?') {
-                $proc = Start-Process -FilePath "msiexec.exe" `
+                $proc = Invoke-ProcessWithElevationRetry -FilePath "msiexec.exe" `
                     -ArgumentList (($uninstStr -replace '(?i)msiexec(\.exe)?\s*', '') + " /qn /norestart") `
-                    -Wait -PassThru -ErrorAction Stop
+                    -Label "Node.js uninstaller"
             } else {
                 Write-Warn "Could not determine Node.js uninstall command. Please uninstall manually."
                 return
@@ -208,14 +241,14 @@ function Uninstall-CcSwitch {
     try {
         $productCode = $CcEntry.PSChildName
         if ($productCode -match '^\{') {
-            $proc = Start-Process -FilePath "msiexec.exe" `
+            $proc = Invoke-ProcessWithElevationRetry -FilePath "msiexec.exe" `
                 -ArgumentList "/x `"$productCode`" /qn /norestart" `
-                -Wait -PassThru -ErrorAction Stop
+                -Label "CC Switch uninstaller"
         } else {
             $uninstStr = $CcEntry.UninstallString
-            $proc = Start-Process -FilePath "msiexec.exe" `
-                -ArgumentList ($uninstStr -replace 'msiexec\.exe\s*', '') + " /qn /norestart" `
-                -Wait -PassThru -ErrorAction Stop
+            $proc = Invoke-ProcessWithElevationRetry -FilePath "msiexec.exe" `
+                -ArgumentList (($uninstStr -replace 'msiexec\.exe\s*', '') + " /qn /norestart") `
+                -Label "CC Switch uninstaller"
         }
         if ($proc.ExitCode -eq 0) {
             Write-Ok "CC Switch uninstalled."
@@ -246,9 +279,9 @@ function Uninstall-ViaWinget {
     param([string]$WingetExe)
     Write-Info "Uninstalling Claude Code via winget..."
     try {
-        $proc = Start-Process $WingetExe `
+        $proc = Invoke-ProcessWithElevationRetry -FilePath $WingetExe `
             -ArgumentList "uninstall --id Anthropic.ClaudeCode --silent --exact" `
-            -Wait -PassThru -ErrorAction Stop
+            -Label "winget uninstall"
         if ($proc.ExitCode -eq 0) {
             Write-Ok "Claude Code uninstalled via winget."
         } else {
