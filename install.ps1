@@ -1004,9 +1004,9 @@ function Main {
         }
     }
 
-    if (-not $global:InstalledViaWinget -and -not $global:InstalledViaNpm) {
-        # 5. Select fastest GitHub mirror
-        if (-not $skipInstall) { Select-Mirror -Version $targetVersion }
+    if (-not $global:InstalledViaWinget -and -not $skipInstall) {
+        # 5. Select fastest GitHub mirror for any path that may download GitHub releases
+        Select-Mirror -Version $targetVersion
     }
 
     # 6. Ensure Git (all install methods need Git for Claude Code to function)
