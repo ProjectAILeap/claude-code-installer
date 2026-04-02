@@ -549,7 +549,7 @@ run_claude_install() {
             kill "$pid" 2>/dev/null
             wait "$pid" 2>/dev/null || true
         else
-            wait "$pid" 2>/dev/null && install_ok=true || true
+            if wait "$pid" 2>/dev/null; then install_ok=true; fi
         fi
     fi
 
@@ -922,8 +922,8 @@ ensure_node() {
         export NVM_DIR="${HOME}/.nvm"
         if curl -fsSL --connect-timeout 30 --max-time 120 \
              "${_raw_mirror}/nvm-sh/nvm/${_nvm_ver}/install.sh" | bash 2>/dev/null; then
-            # shellcheck source=/dev/null
-            [ -s "${NVM_DIR}/nvm.sh" ] && source "${NVM_DIR}/nvm.sh" || true
+            # shellcheck disable=SC1091
+            if [ -s "${NVM_DIR}/nvm.sh" ]; then source "${NVM_DIR}/nvm.sh"; fi
             if command -v nvm &>/dev/null; then
                 nvm install --lts 2>&1 | grep -E '(Now using|installed|error)' || true
                 nvm use --lts 2>/dev/null || true
