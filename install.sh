@@ -37,7 +37,6 @@ INSTALL_METHOD=""   # "official" or "fallback"
 DESKTOP_VERSION=""
 INSTALL_CLI=true
 INSTALL_DESKTOP=false
-# shellcheck disable=SC2034
 DESKTOP_FILE=""
 PATH_RC_FILE=""     # shell rc/profile file updated for PATH
 MIRROR_ORDER=()  # all reachable sources sorted by latency (GCS + GitHub)
@@ -854,11 +853,138 @@ install_cc_switch_linux() {
     fi
 }
 
-# ── Desktop App detection ────────────────────────────────────────────────
-# placeholder — replaced in Task 3
-is_desktop_installed() { return 1; }
-download_desktop() { :; }
-install_desktop() { :; }
+# ── Desktop App ──────────────────────────────────────────────────────────
+is_desktop_installed() {
+    [[ -d "/Applications/Claude.app" ]]
+}
+
+get_desktop_filename() {
+    printf "Claude-%s-darwin-universal.dmg" "${DESKTOP_VERSION}"
+}
+
+download_desktop() {
+    step "Downloading Claude Desktop App v${DESKTOP_VERSION}..."
+    mkdir -p "${DOWNLOAD_DIR}"
+
+    local filename
+    filename="$(get_desktop_filename)"
+    local cache_file="${DOWNLOAD_DIR}/${filename}"
+    local sha_file="${DOWNLOAD_DIR}/desktop-sha256sums-${DESKTOP_VERSION}.txt"
+
+    local sha_downloaded=false
+    if [[ ! -f "$sha_file" ]]; then
+        for mirror in "${MIRROR_ORDER[@]}"; do
+            local sha_url="${mirror}/${RELEASES_REPO}/releases/download/desktop-v${DESKTOP_VERSION}/sha256sums.txt"
+            if curl -fsSL --connect-timeout 15 --max-time 30 -o "$sha_file" "$sha_url" 2>/dev/null; then
+                sha_downloaded=true
+                break
+            fi
+        done
+    else
+        sha_downloaded=true
+    fi
+
+    if [[ -f "$cache_file" ]]; then
+        if $sha_downloaded; then
+            local expected actual
+            expected="$(grep "$filename" "$sha_file" 2>/dev/null | awk '{print $1}')"
+            if [[ -n "$expected" ]]; then
+                if command -v sha256sum &>/dev/null; then
+                    actual="$(sha256sum "$cache_file" | awk '{print $1}')"
+                elif command -v shasum &>/dev/null; then
+                    actual="$(shasum -a 256 "$cache_file" | awk '{print $1}')"
+                fi
+                if [[ "$actual" == "$expected" ]]; then
+                    ok "Using cached ${filename} (checksum OK)."
+                    DESKTOP_FILE="$cache_file"
+                    return
+                else
+                    warn "Cached file checksum mismatch, re-downloading..."
+                    rm -f "$cache_file"
+                fi
+            else
+                ok "Using cached ${filename} (no checksum entry found)."
+                DESKTOP_FILE="$cache_file"
+                return
+            fi
+        else
+            ok "Using cached ${filename} (no checksum available)."
+            DESKTOP_FILE="$cache_file"
+            return
+        fi
+    fi
+
+    local mirror
+    for mirror in "${MIRROR_ORDER[@]}"; do
+        local dl_url="${mirror}/${RELEASES_REPO}/releases/download/desktop-v${DESKTOP_VERSION}/${filename}"
+        info "Source: $(_mirror_label "$mirror")"
+        if curl -fL --connect-timeout 30 --max-time 600 \
+             --progress-bar -o "${cache_file}" "${dl_url}" 2>/dev/null; then
+            if $sha_downloaded; then
+                local expected actual
+                expected="$(grep "$filename" "$sha_file" 2>/dev/null | awk '{print $1}')"
+                if [[ -n "$expected" ]]; then
+                    if command -v sha256sum &>/dev/null; then
+                        actual="$(sha256sum "$cache_file" | awk '{print $1}')"
+                    elif command -v shasum &>/dev/null; then
+                        actual="$(shasum -a 256 "$cache_file" | awk '{print $1}')"
+                    fi
+                    if [[ "$actual" == "$expected" ]]; then
+                        ok "SHA-256 verified."
+                    else
+                        err "Checksum mismatch! Expected: ${expected} Got: ${actual}"
+                        rm -f "$cache_file"
+                        continue
+                    fi
+                fi
+            fi
+            DESKTOP_FILE="$cache_file"
+            return
+        fi
+        warn "  Failed, trying next mirror..."
+    done
+
+    [[ -f "$cache_file" ]] || die "Desktop App download failed from all mirrors."
+    DESKTOP_FILE="$cache_file"
+}
+
+install_desktop() {
+    step "Installing Claude Desktop App..."
+
+    local mount_output mount_point app_path app_name
+
+    mount_output="$(hdiutil attach "${DESKTOP_FILE}" -nobrowse -quiet 2>&1)" || {
+        warn "Failed to mount DMG."
+        info "DMG saved at: ${DESKTOP_FILE}"
+        info "Double-click the DMG file to install manually."
+        return
+    }
+
+    mount_point="$(printf '%s' "$mount_output" | grep -oE '/Volumes/[^\t]*' | head -1 | sed 's/[[:space:]]*$//')"
+    if [[ -z "$mount_point" ]]; then
+        warn "Could not determine mount point."
+        info "DMG saved at: ${DESKTOP_FILE}"
+        return
+    fi
+
+    app_path="$(find "$mount_point" -maxdepth 1 -name '*.app' -print -quit 2>/dev/null)"
+    if [[ -z "$app_path" ]]; then
+        hdiutil detach "$mount_point" -quiet 2>/dev/null || true
+        warn "No .app found in DMG."
+        info "DMG saved at: ${DESKTOP_FILE}"
+        return
+    fi
+
+    app_name="$(basename "$app_path")"
+    info "Found: ${app_name}"
+
+    rm -rf "/Applications/${app_name}" 2>/dev/null || true
+    cp -R "$app_path" /Applications/
+    hdiutil detach "$mount_point" -quiet 2>/dev/null || true
+    xattr -cr "/Applications/${app_name}" 2>/dev/null || true
+
+    ok "Claude Desktop App installed: /Applications/${app_name}"
+}
 
 # ── CC Switch already-installed detection ─────────────────────────────────
 is_cc_switch_installed() {
