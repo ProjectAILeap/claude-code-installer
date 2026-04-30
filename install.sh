@@ -34,6 +34,7 @@ CC_SWITCH_INSTALLED=false
 INSTALL_DIR=""      # set by detect_install_dir, used only in fallback
 CLAUDE_BIN=""       # full path to installed claude binary (may not be in PATH)
 INSTALL_METHOD=""   # "official" or "fallback"
+DESKTOP_VERSION=""
 PATH_RC_FILE=""     # shell rc/profile file updated for PATH
 MIRROR_ORDER=()  # all reachable sources sorted by latency (GCS + GitHub)
 GITHUB_MIRROR="" # fastest GitHub mirror (CC Switch only)
@@ -333,6 +334,7 @@ make_download_url() {
 get_latest_version() {
     step "Fetching latest version..."
     VERSION=""
+    DESKTOP_VERSION=""
 
     local readme=""
     local readme_urls=(
@@ -350,6 +352,7 @@ get_latest_version() {
 
     if [[ -n "$readme" ]]; then
         VERSION="$(printf '%s' "$readme" | grep -oE 'releases/tag/v[0-9]+\.[0-9]+\.[0-9]+' | grep -v desktop | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+        DESKTOP_VERSION="$(printf '%s' "$readme" | grep -oE 'releases/tag/desktop-v[0-9]+\.[0-9]+\.[0-9]+' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
     fi
 
     if [[ -z "${VERSION:-}" ]]; then
@@ -367,6 +370,9 @@ get_latest_version() {
         if [[ -n "${api_response:-}" ]]; then
             VERSION="$(printf '%s' "$api_response" | grep '"tag_name"' | grep -v desktop | head -1 | \
                 sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/')"
+            [[ -z "${DESKTOP_VERSION:-}" ]] && \
+                DESKTOP_VERSION="$(printf '%s' "$api_response" | grep '"tag_name".*desktop-v' | head -1 | \
+                    sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"desktop-v\([^"]*\)".*/\1/')"
         fi
     fi
 
@@ -383,6 +389,7 @@ get_latest_version() {
 
     [[ -n "${VERSION:-}" ]] || die "Cannot determine latest CLI version. Check network."
     info "CLI: v${VERSION}"
+    [[ -n "${DESKTOP_VERSION:-}" ]] && info "Desktop: v${DESKTOP_VERSION}"
 }
 
 # ── Version check ─────────────────────────────────────────────────────────
