@@ -359,7 +359,14 @@ function Main {
     $anthropicKeys = @("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL") |
         Where-Object { $null -ne [Environment]::GetEnvironmentVariable($_, "User") }
 
-    $hasInstall = $isWinget -or $isNpmInstall -or ($foundExes.Count -gt 0) -or $gitEntry -or $nodeEntry
+    $desktopExe = "$env:LOCALAPPDATA\Claude\Claude.exe"
+    $desktopInstalled = Test-Path $desktopExe
+    $desktopEntry = $null
+    if ($desktopInstalled) {
+        $desktopEntry = Find-RegistryEntryByPatterns @("Claude", "Claude Desktop*")
+    }
+
+    $hasInstall = $isWinget -or $isNpmInstall -or ($foundExes.Count -gt 0) -or $gitEntry -or $nodeEntry -or $desktopInstalled
     if (-not $hasInstall) {
         Write-Warn "Claude Code does not appear to be installed."
         Write-Info "Nothing to remove."
@@ -392,6 +399,10 @@ function Main {
         Write-Info "Node.js:   $($nodeEntry.DisplayName) [$nodeLabel]"
     }
     if ($anthropicKeys) { Write-Info "ANTHROPIC_*: $($anthropicKeys -join ', ') (user env)" }
+    if ($desktopInstalled) {
+        $desktopLabel = if ($desktopEntry) { "$($desktopEntry.DisplayName) v$($desktopEntry.DisplayVersion)" } else { $desktopExe }
+        Write-Info "Desktop:   $desktopLabel"
+    }
     Write-Host ""
 
     # Collect choices
@@ -456,9 +467,14 @@ function Main {
         $removeNode = Ask-YesNo "Remove Node.js ($($nodeEntry.DisplayName))?" $false
     }
 
+    $removeDesktop = $false
+    if ($desktopInstalled) {
+        $removeDesktop = Ask-YesNo "Remove Claude Desktop App?"
+    }
+
     # Check anything selected
     $anySelected = $removeWinget -or $removeNpm -or ($removeBinaries.Count -gt 0) -or $removeCache -or $removeConfig `
-                   -or $removeCcSwitch -or $removeAnthropicEnv -or $removeGit -or $removeNode
+                   -or $removeCcSwitch -or $removeAnthropicEnv -or $removeGit -or $removeNode -or $removeDesktop
     if (-not $anySelected) {
         Write-Host "`nNothing selected. Exiting."
         Wait-BeforeExit
@@ -479,6 +495,7 @@ function Main {
     if ($removeAnthropicEnv) { Write-Host "  - ANTHROPIC_* user environment variables" }
     if ($removeGit)         { Write-Host "  - Git for Windows ($($gitEntry.DisplayName))" }
     if ($removeNode)        { Write-Host "  - Node.js ($($nodeEntry.DisplayName))" }
+    if ($removeDesktop)     { Write-Host "  - Claude Desktop App ($env:LOCALAPPDATA\Claude\)" }
     Write-Host ""
 
     if (-not (Ask-YesNo "Proceed?")) {
@@ -571,6 +588,34 @@ function Main {
 
     if ($removeNode -and $nodeEntry) {
         Uninstall-Node -NodeEntry $nodeEntry
+    }
+
+    if ($removeDesktop) {
+        Write-Info "Removing Claude Desktop App..."
+        if ($desktopEntry -and $desktopEntry.UninstallString) {
+            try {
+                $uninstStr = $desktopEntry.UninstallString
+                $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c `"$uninstStr`"" `
+                    -Wait -PassThru -ErrorAction Stop
+                if ($proc.ExitCode -eq 0) {
+                    Write-Ok "Claude Desktop App uninstalled."
+                } else {
+                    Write-Warn "Uninstaller exited with code $($proc.ExitCode). Trying direct removal..."
+                    Remove-Item "$env:LOCALAPPDATA\Claude" -Recurse -Force -ErrorAction SilentlyContinue
+                    Write-Ok "Removed: $env:LOCALAPPDATA\Claude\"
+                }
+            } catch {
+                Write-Warn "Uninstall failed: $($_.Exception.Message). Trying direct removal..."
+                Remove-Item "$env:LOCALAPPDATA\Claude" -Recurse -Force -ErrorAction SilentlyContinue
+                Write-Ok "Removed: $env:LOCALAPPDATA\Claude\"
+            }
+        } else {
+            Remove-Item "$env:LOCALAPPDATA\Claude" -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Ok "Removed: $env:LOCALAPPDATA\Claude\"
+        }
+        Get-ChildItem "$DOWNLOAD_CACHE\ClaudeSetup-*" -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item $_.FullName -Force; Write-Info "  Cleaned cache: $($_.Name)" }
+        Write-Info "Desktop App user data (if any): $env:APPDATA\Claude\"
     }
 
     Write-Host ""
