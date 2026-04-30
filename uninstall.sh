@@ -84,6 +84,14 @@ find_cc_switch() {
     fi
 }
 
+# ── Detect Desktop App ───────────────────────────────────────────────────────
+find_desktop_app() {
+    DESKTOP_APP_PATH=""
+    if [[ "$OS" == "Darwin" ]] && [[ -d "/Applications/Claude.app" ]]; then
+        DESKTOP_APP_PATH="/Applications/Claude.app"
+    fi
+}
+
 # ── Detect ANTHROPIC env vars in shell profiles ───────────────────────────────
 find_anthropic_env() {
     PROFILES_WITH_ANTHROPIC=()
@@ -157,8 +165,9 @@ main() {
     find_npm_installation
     find_cc_switch
     find_anthropic_env
+    find_desktop_app
 
-    if [[ -z "$BINARY_PATH" ]] && [[ -z "$INSTALLED_VERSION" ]] && ! $NPM_INSTALL_FOUND; then
+    if [[ -z "$BINARY_PATH" ]] && [[ -z "$INSTALLED_VERSION" ]] && ! $NPM_INSTALL_FOUND && [[ -z "$DESKTOP_APP_PATH" ]]; then
         warn "Claude Code does not appear to be installed."
         info "Nothing to remove."
         exit 0
@@ -171,6 +180,7 @@ main() {
     $NPM_INSTALL_FOUND             && info "  npm:      ${NPM_CLAUDE_PATH} (npm global)"
     info "  Data dir: ${DATA_DIR}"
     [[ -n "$CC_SWITCH_LABEL"   ]] && info "  CC Switch: ${CC_SWITCH_LABEL}"
+    [[ -n "$DESKTOP_APP_PATH"  ]] && info "  Desktop: ${DESKTOP_APP_PATH}"
     [[ ${#PROFILES_WITH_ANTHROPIC[@]} -gt 0 ]] && \
         info "  ANTHROPIC_* env: ${PROFILES_WITH_ANTHROPIC[*]}"
     printf "\n"
@@ -205,9 +215,14 @@ main() {
     [[ ${#PROFILES_WITH_ANTHROPIC[@]} -gt 0 ]] && \
         ask "Remove ANTHROPIC_* variables from shell profiles?" && REMOVE_ANTHROPIC_ENV=true
 
+    REMOVE_DESKTOP=false
+
+    [[ -n "$DESKTOP_APP_PATH" ]] && \
+        ask "Remove Claude Desktop App (${DESKTOP_APP_PATH})?" && REMOVE_DESKTOP=true
+
     # ── Confirm ──────────────────────────────────────────────────────────────
     if ! $REMOVE_BINARY && ! $REMOVE_NPM && ! $REMOVE_DATA && ! $REMOVE_PATH && \
-       ! $REMOVE_CONFIG && ! $REMOVE_CC_SWITCH && ! $REMOVE_ANTHROPIC_ENV; then
+       ! $REMOVE_CONFIG && ! $REMOVE_CC_SWITCH && ! $REMOVE_ANTHROPIC_ENV && ! $REMOVE_DESKTOP; then
         printf "\nNothing selected. Exiting.\n"
         exit 0
     fi
@@ -221,6 +236,7 @@ main() {
                                     "$CLAUDE_CONFIG_DIR" "$CLAUDE_CONFIG_FILE"
     $REMOVE_CC_SWITCH    && printf "  - CC Switch:      %s\n" "$CC_SWITCH_LABEL"
     $REMOVE_ANTHROPIC_ENV && printf "  - ANTHROPIC_* env from shell profiles\n"
+    $REMOVE_DESKTOP      && printf "  - Desktop:        %s\n" "$DESKTOP_APP_PATH"
 
     printf "\n"
     ask "Proceed?" || { printf "\nCancelled.\n"; exit 0; }
@@ -272,6 +288,16 @@ main() {
             rm -f "$CC_SWITCH_PATH"
         fi
         ok "Removed: ${CC_SWITCH_LABEL}"
+    fi
+
+    if $REMOVE_DESKTOP && [[ -n "$DESKTOP_APP_PATH" ]]; then
+        rm -rf "$DESKTOP_APP_PATH"
+        ok "Removed: ${DESKTOP_APP_PATH}"
+        local dmg
+        for dmg in "${HOME}/.claude/downloads"/Claude-*-darwin-universal.dmg; do
+            [[ -f "$dmg" ]] && rm -f "$dmg" && info "  Cleaned cache: $(basename "$dmg")"
+        done
+        info "Desktop App user data (if any): ~/Library/Application Support/Claude/"
     fi
 
     if $REMOVE_ANTHROPIC_ENV; then
