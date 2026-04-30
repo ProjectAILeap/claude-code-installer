@@ -58,13 +58,20 @@ layer2() {
         fail "detect_platform 返回非预期值: '${platform}'"
     fi
 
-    # get_latest_version
-    local version
+    # get_latest_version (README-based, returns both CLI and Desktop versions)
+    local version desktop_version
     version="$(bash -c "source '${INSTALL_SH}'; get_latest_version; echo \$VERSION" 2>/dev/null | tail -1)"
     if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        pass "get_latest_version → v${version}"
+        pass "get_latest_version → CLI v${version}"
     else
-        fail "get_latest_version 返回非预期值: '${version}'"
+        fail "get_latest_version CLI 返回非预期值: '${version}'"
+    fi
+
+    desktop_version="$(bash -c "source '${INSTALL_SH}'; get_latest_version; echo \$DESKTOP_VERSION" 2>/dev/null | tail -1)"
+    if [[ "$desktop_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        pass "get_latest_version → Desktop v${desktop_version}"
+    else
+        fail "get_latest_version Desktop 返回非预期值: '${desktop_version}'"
     fi
 
     # check_installed_version（预期已安装且是最新，脚本 exit 0）
@@ -212,6 +219,40 @@ layer3() {
         pass "npm 安装路径：binary / PATH / marker 全部正确"
     else
         fail "npm 安装路径异常: '${npm_install_out}'"
+    fi
+
+    # 模拟：Linux 上 select_product 应跳过菜单，INSTALL_DESKTOP=false
+    local product_linux_out
+    product_linux_out="$(bash -c "
+        source '${INSTALL_SH}'
+        PLATFORM='linux-x64'
+        DESKTOP_VERSION='1.5354.0'
+        select_product
+        echo \"CLI=\$INSTALL_CLI\"
+        echo \"DESKTOP=\$INSTALL_DESKTOP\"
+    " 2>/dev/null)"
+    if echo "$product_linux_out" | grep -q "^CLI=true$" &&
+       echo "$product_linux_out" | grep -q "^DESKTOP=false$"; then
+        pass "Linux: select_product → CLI=true, DESKTOP=false（菜单跳过）"
+    else
+        fail "Linux select_product 异常: '${product_linux_out}'"
+    fi
+
+    # 模拟：DESKTOP_VERSION 为空时 select_product 应只装 CLI
+    local product_nodesktop_out
+    product_nodesktop_out="$(bash -c "
+        source '${INSTALL_SH}'
+        PLATFORM='darwin-arm64'
+        DESKTOP_VERSION=''
+        select_product
+        echo \"CLI=\$INSTALL_CLI\"
+        echo \"DESKTOP=\$INSTALL_DESKTOP\"
+    " 2>/dev/null)"
+    if echo "$product_nodesktop_out" | grep -q "^CLI=true$" &&
+       echo "$product_nodesktop_out" | grep -q "^DESKTOP=false$"; then
+        pass "macOS + no DESKTOP_VERSION: select_product → CLI only"
+    else
+        fail "macOS no DESKTOP_VERSION select_product 异常: '${product_nodesktop_out}'"
     fi
 }
 
