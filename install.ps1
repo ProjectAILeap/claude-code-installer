@@ -159,6 +159,10 @@ $global:InstalledViaWinget = $false
 $global:InstalledViaNpm    = $false
 $global:InstallMethod      = ""
 $global:InstalledClaudeExe = ""
+$global:InstallCli        = $true
+$global:InstallDesktop    = $false
+$global:DesktopVersion    = ""
+$global:DesktopFile       = ""
 
 function Test-AnthropicApiReachable {
     try {
@@ -263,8 +267,9 @@ function Get-DownloadUrl {
 
 # -- Fetch latest version ------------------------------------------------------
 function Get-LatestVersion {
-    Write-Step "Fetching latest Claude Code version..."
+    Write-Step "Fetching latest version..."
     $ver = ""
+    $global:DesktopVersion = ""
 
     $readmeUrls = @(
         "$PREFERRED_MIRROR/$RELEASES_REPO/raw/main/README.md",
@@ -281,8 +286,13 @@ function Get-LatestVersion {
         } catch {}
     }
 
-    if ($readme -and $readme -match 'releases/tag/v(\d+\.\d+\.\d+)') {
-        $ver = $Matches[1]
+    if ($readme) {
+        if ($readme -match 'releases/tag/v(\d+\.\d+\.\d+)') {
+            $ver = $Matches[1]
+        }
+        if ($readme -match 'releases/tag/desktop-v(\d+\.\d+\.\d+)') {
+            $global:DesktopVersion = $Matches[1]
+        }
     }
 
     if (-not $ver) {
@@ -296,10 +306,13 @@ function Get-LatestVersion {
                 $releases = Invoke-RestMethod -Uri $apiUrl `
                     -TimeoutSec 15 -Headers @{ Accept = "application/vnd.github.v3+json" } -ErrorAction Stop
                 foreach ($r in $releases) {
-                    if ($r.tag_name -match '^v(\d+\.\d+\.\d+)$') {
+                    if (-not $ver -and $r.tag_name -match '^v(\d+\.\d+\.\d+)$') {
                         $ver = $Matches[1]
-                        break
                     }
+                    if (-not $global:DesktopVersion -and $r.tag_name -match '^desktop-v(\d+\.\d+\.\d+)$') {
+                        $global:DesktopVersion = $Matches[1]
+                    }
+                    if ($ver -and $global:DesktopVersion) { break }
                 }
                 if ($ver) { break }
             } catch {}
@@ -327,6 +340,7 @@ function Get-LatestVersion {
         Exit-WithError "Cannot determine latest Claude Code CLI version. Check network connectivity."
     }
     Write-Info "CLI: v$ver"
+    if ($global:DesktopVersion) { Write-Info "Desktop: v$($global:DesktopVersion)" }
     return $ver
 }
 
@@ -1072,6 +1086,137 @@ function Install-ViaNpm {
     }
 }
 
+# -- Desktop App ---------------------------------------------------------------
+function Select-Product {
+    if (-not $global:DesktopVersion) {
+        Write-Warn "Could not detect Desktop App version, only CLI available."
+        $global:InstallCli     = $true
+        $global:InstallDesktop = $false
+        return
+    }
+
+    Write-Host ""
+    Write-Host "What would you like to install?" -ForegroundColor Cyan
+    Write-Host "  [1] Claude Code (CLI)"
+    Write-Host "  [2] Claude Desktop App"
+    Write-Host "  [3] Both"
+    Write-Host ""
+    $choice = Read-Host "Enter choice [1]"
+    if (-not $choice) { $choice = "1" }
+
+    switch ($choice) {
+        "2" {
+            $global:InstallCli     = $false
+            $global:InstallDesktop = $true
+        }
+        "3" {
+            $global:InstallCli     = $true
+            $global:InstallDesktop = $true
+        }
+        default {
+            $global:InstallCli     = $true
+            $global:InstallDesktop = $false
+        }
+    }
+}
+
+function Test-DesktopInstalled {
+    return (Test-Path "$env:LOCALAPPDATA\Claude\Claude.exe")
+}
+
+function Install-DesktopApp {
+    param([string]$Version)
+
+    Write-Step "Installing Claude Desktop App v$Version..."
+    $desktopPlatform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "win32-arm64" } else { "win32-x64" }
+    $fileName = "ClaudeSetup-$Version-$desktopPlatform.exe"
+    $filePath = "$DOWNLOAD_DIR\$fileName"
+    $shaFile  = "$DOWNLOAD_DIR\desktop-sha256sums-$Version.txt"
+
+    New-Item -ItemType Directory -Force -Path $DOWNLOAD_DIR | Out-Null
+
+    $shaOk = $false
+    if (Test-Path $shaFile) {
+        $shaOk = $true
+    } else {
+        $shaOk = Invoke-DownloadMirror `
+            -Path "/$RELEASES_REPO/releases/download/desktop-v$Version/sha256sums.txt" `
+            -OutFile $shaFile -Label "Desktop sha256sums.txt"
+    }
+
+    $needDownload = $true
+    if (Test-Path $filePath) {
+        if ($shaOk) {
+            $shaContent = Get-Content $shaFile -Raw -ErrorAction SilentlyContinue
+            $escapedName = [regex]::Escape($fileName)
+            if ($shaContent -match "([a-f0-9]{64})\s+$escapedName") {
+                $expected = $Matches[1]
+                $actual = (Get-FileHash -Path $filePath -Algorithm SHA256).Hash.ToLower()
+                if ($actual -eq $expected) {
+                    Write-Ok "Using cached $fileName (checksum OK)."
+                    $needDownload = $false
+                } else {
+                    Write-Warn "Cached file checksum mismatch, re-downloading..."
+                    Remove-Item $filePath -Force -ErrorAction SilentlyContinue
+                }
+            } else {
+                Write-Ok "Using cached $fileName (no checksum match in sha256sums.txt)."
+                $needDownload = $false
+            }
+        } else {
+            Write-Ok "Using cached $fileName."
+            $needDownload = $false
+        }
+    }
+
+    if ($needDownload) {
+        Write-Info "Downloading $fileName..."
+        $dlOk = Invoke-DownloadMirror `
+            -Path "/$RELEASES_REPO/releases/download/desktop-v$Version/$fileName" `
+            -OutFile $filePath -Label "Claude Desktop App"
+
+        if (-not $dlOk) {
+            Write-Warn "Desktop App download failed."
+            Write-Info "Download manually from: https://github.com/$RELEASES_REPO/releases/tag/desktop-v$Version"
+            return
+        }
+
+        if ($shaOk) {
+            $shaContent = Get-Content $shaFile -Raw -ErrorAction SilentlyContinue
+            $escapedName = [regex]::Escape($fileName)
+            if ($shaContent -match "([a-f0-9]{64})\s+$escapedName") {
+                $expected = $Matches[1]
+                $actual = (Get-FileHash -Path $filePath -Algorithm SHA256).Hash.ToLower()
+                if ($actual -eq $expected) {
+                    Write-Ok "SHA-256 verified."
+                } else {
+                    Write-Warn "Checksum mismatch! File may be corrupted."
+                    Remove-Item $filePath -Force -ErrorAction SilentlyContinue
+                    return
+                }
+            }
+        }
+    }
+
+    Unblock-File -Path $filePath -ErrorAction SilentlyContinue
+
+    Write-Info "Running installer..."
+    try {
+        $proc = Start-Process -FilePath $filePath -Wait -PassThru -ErrorAction Stop
+        if (Test-DesktopInstalled) {
+            Write-Ok "Claude Desktop App installed: $env:LOCALAPPDATA\Claude\Claude.exe"
+        } else {
+            Write-Warn "Installer completed but Claude.exe not found at expected location."
+            Write-Info "Setup file saved at: $filePath"
+        }
+    } catch {
+        Write-Warn "Failed to run installer: $($_.Exception.Message)"
+        Write-Info "Setup file saved at: $filePath"
+    }
+
+    $global:DesktopFile = $filePath
+}
+
 # -- Main ----------------------------------------------------------------------
 function Main {
     Write-Host ""
@@ -1087,37 +1232,42 @@ function Main {
     # 2. Platform (aligns with official: supports win32-arm64)
     $platform = if ($env:PROCESSOR_ARCHITECTURE -eq "ARM64") { "win32-arm64" } else { "win32-x64" }
 
-    # 3. Version check (shared by both install methods)
+    # 3. Version check
     $targetVersion    = Get-LatestVersion
-    $installedVersion = Get-InstalledVersion
+    Select-Product
+
+    $installedVersion = ""
     $skipInstall      = $false
-    if ($installedVersion -eq $targetVersion) {
-        Write-Ok "Claude Code v$targetVersion is already up to date."
-        $skipInstall = $true
-        # If claude is not in PATH but exists at LOCAL_BIN, fix PATH now
-        $LOCAL_BIN = "$env:USERPROFILE\.local\bin"
-        if (-not (Get-Command claude -ErrorAction SilentlyContinue) -and (Test-Path "$LOCAL_BIN\claude.exe")) {
-            $currentUp = [Environment]::GetEnvironmentVariable("Path", "User")
-            if ($null -eq $currentUp) { $currentUp = "" }
-            if (-not $currentUp.Contains($LOCAL_BIN)) {
-                [Environment]::SetEnvironmentVariable("Path", "$currentUp;$LOCAL_BIN", "User")
-                Write-Ok "Added to PATH: $LOCAL_BIN"
+
+    if ($global:InstallCli) {
+        $installedVersion = Get-InstalledVersion
+        if ($installedVersion -eq $targetVersion) {
+            Write-Ok "Claude Code v$targetVersion is already up to date."
+            $skipInstall = $true
+            $LOCAL_BIN = "$env:USERPROFILE\.local\bin"
+            if (-not (Get-Command claude -ErrorAction SilentlyContinue) -and (Test-Path "$LOCAL_BIN\claude.exe")) {
+                $currentUp = [Environment]::GetEnvironmentVariable("Path", "User")
+                if ($null -eq $currentUp) { $currentUp = "" }
+                if (-not $currentUp.Contains($LOCAL_BIN)) {
+                    [Environment]::SetEnvironmentVariable("Path", "$currentUp;$LOCAL_BIN", "User")
+                    Write-Ok "Added to PATH: $LOCAL_BIN"
+                }
+                $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
+                $isChildProcess = [Environment]::GetCommandLineArgs() | Where-Object { $_ -match '(?i)^-File$' }
+                if ($isChildProcess) {
+                    Write-Warn "Please open a NEW terminal to use claude."
+                } else {
+                    Write-Ok "claude is now available in this session."
+                }
             }
-            $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")
-            $isChildProcess = [Environment]::GetCommandLineArgs() | Where-Object { $_ -match '(?i)^-File$' }
-            if ($isChildProcess) {
-                Write-Warn "Please open a NEW terminal to use claude."
-            } else {
-                Write-Ok "claude is now available in this session."
-            }
+        } elseif ($installedVersion) {
+            Write-Info "Upgrading: v$installedVersion -> v$targetVersion"
+        } else {
+            Write-Info "Installing Claude Code v$targetVersion"
         }
-    } elseif ($installedVersion) {
-        Write-Info "Upgrading: v$installedVersion -> v$targetVersion"
-    } else {
-        Write-Info "Installing Claude Code v$targetVersion"
     }
 
-    if (-not $skipInstall) {
+    if ($global:InstallCli -and -not $skipInstall) {
         # 4. Choose installation method
         Write-Host ""
         Write-Host "Select installation method:" -ForegroundColor Cyan
@@ -1144,15 +1294,19 @@ function Main {
         }
     }
 
-    if (-not $global:InstalledViaWinget -and -not $skipInstall) {
-        # 5. Select fastest GitHub mirror for any path that may download GitHub releases
-        Select-Mirror -Version $targetVersion
+    if ((-not $global:InstalledViaWinget -and $global:InstallCli -and -not $skipInstall) -or $global:InstallDesktop) {
+        if (-not $global:SelectedMirror) {
+            # 5. Select fastest GitHub mirror
+            Select-Mirror -Version $targetVersion
+        }
     }
 
-    # 6. Ensure Git (all install methods need Git for Claude Code to function)
-    Ensure-Git
+    # 6. Ensure Git (needed for Claude Code CLI to function)
+    if ($global:InstallCli) {
+        Ensure-Git
+    }
 
-    if (-not $global:InstalledViaWinget -and -not $global:InstalledViaNpm -and -not $skipInstall) {
+    if ($global:InstallCli -and -not $global:InstalledViaWinget -and -not $global:InstalledViaNpm -and -not $skipInstall) {
         # 7. Prepare download dir (aligns with official: ~/.claude/downloads)
         New-Item -ItemType Directory -Force -Path $DOWNLOAD_DIR | Out-Null
 
@@ -1301,21 +1455,36 @@ function Main {
         Write-Info "New terminal windows will also have claude in PATH automatically."
     }
 
-    # 12. Optional: CC Switch
-    Write-Host ""
-    $ccSwitchInstalled = $false
-    if (Test-CcSwitchInstalled) {
-        Write-Ok "CC Switch is already installed."
-        $ccSwitchInstalled = $true
-    } else {
-        $installCcSwitch = Read-Host "Install CC Switch (API Provider switcher)? [y/N]"
-        if ($installCcSwitch -match '^[Yy]') {
-            $ccSwitchInstalled = Install-CcSwitch
+    # Desktop App install
+    if ($global:InstallDesktop) {
+        $desktopNeedsInstall = $true
+        if (Test-DesktopInstalled) {
+            $overwrite = Read-Host "Desktop App is already installed. Overwrite? [y/N]"
+            if ($overwrite -notmatch '^[Yy]') { $desktopNeedsInstall = $false }
+        }
+
+        if ($desktopNeedsInstall -and $global:DesktopVersion) {
+            Install-DesktopApp -Version $global:DesktopVersion
         }
     }
 
-    # 13. API / Provider configuration
-    Configure-ApiKey -CcSwitchInstalled $ccSwitchInstalled
+    # 12. Optional: CC Switch
+    $ccSwitchInstalled = $false
+    if ($global:InstallCli) {
+        Write-Host ""
+        if (Test-CcSwitchInstalled) {
+            Write-Ok "CC Switch is already installed."
+            $ccSwitchInstalled = $true
+        } else {
+            $installCcSwitch = Read-Host "Install CC Switch (API Provider switcher)? [y/N]"
+            if ($installCcSwitch -match '^[Yy]') {
+                $ccSwitchInstalled = Install-CcSwitch
+            }
+        }
+
+        # 13. API / Provider configuration
+        Configure-ApiKey -CcSwitchInstalled $ccSwitchInstalled
+    }
 
     # 14. Done
     Write-Host ""
@@ -1341,6 +1510,10 @@ function Main {
     Write-Host ""
     if ($ccSwitchInstalled) {
         Write-Host "  CC Switch: open from Start Menu to configure your API Provider." -ForegroundColor Cyan
+        Write-Host ""
+    }
+    if ($global:InstallDesktop -and (Test-DesktopInstalled)) {
+        Write-Host "  Claude Desktop App: $env:LOCALAPPDATA\Claude\Claude.exe" -ForegroundColor Cyan
         Write-Host ""
     }
     Write-Host "  To upgrade:   powershell -ExecutionPolicy Bypass -File install.ps1"
