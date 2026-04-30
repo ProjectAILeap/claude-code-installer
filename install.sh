@@ -1256,6 +1256,11 @@ print_done() {
         printf "\n"
     fi
 
+    if $INSTALL_DESKTOP && [[ -d "/Applications/Claude.app" ]]; then
+        printf "  ${CYAN}Claude Desktop App: /Applications/Claude.app${NC}\n"
+        printf "\n"
+    fi
+
     printf "  To upgrade: re-run this installer\n"
     printf "  To uninstall: run uninstall.sh\n\n"
 
