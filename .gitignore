@@ -13,3 +13,6 @@ desktop.ini
 .idea/
 *.swp
 *~
+
+# Worktrees
+.worktrees/
