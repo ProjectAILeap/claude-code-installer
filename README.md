@@ -9,14 +9,14 @@
 
 ## 平台支持 / Platform Support
 
-| 操作系统 | 架构 | Claude Code | CC Switch |
-|---------|------|:-----------:|:---------:|
-| Windows | x64  | ✅ | ✅ MSI |
-| Windows | ARM64 | ✅ | ✅ MSI |
-| macOS   | Apple Silicon (arm64) | ✅ | ✅ Universal |
-| macOS   | Intel (x64) | ✅ | ✅ Universal |
-| Linux   | x64 (glibc / musl) | ✅ | ✅ AppImage |
-| Linux   | ARM64 (glibc / musl) | ✅ | ✅ AppImage |
+| 操作系统 | 架构 | Claude Code CLI | Desktop App | CC Switch |
+|---------|------|:-----------:|:-----------:|:---------:|
+| Windows | x64  | ✅ | ✅ | ✅ MSI |
+| Windows | ARM64 | ✅ | ✅ | ✅ MSI |
+| macOS   | Apple Silicon (arm64) | ✅ | ✅ Universal | ✅ Universal |
+| macOS   | Intel (x64) | ✅ | ✅ Universal | ✅ Universal |
+| Linux   | x64 (glibc / musl) | ✅ | — | ✅ AppImage |
+| Linux   | ARM64 (glibc / musl) | ✅ | — | ✅ AppImage |
 
 二进制来源：[ProjectAILeap/claude-code-releases](https://github.com/ProjectAILeap/claude-code-releases)（官方二进制镜像存档，未做任何修改）
 
@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer
 curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-code-installer/main/install.sh | bash
 ```
 
-安装完成后重启终端，运行 `claude` 即可。脚本会提示选择安装方式：`[1] Direct binary`（推荐）或 `[2] npm`。
+安装完成后重启终端，运行 `claude` 即可。macOS 用户会先选择安装产品：`[1] Claude Code (CLI)` / `[2] Claude Desktop App` / `[3] Both`，然后选择 CLI 安装方式。Linux 用户直接进入 CLI 安装（Desktop App 无 Linux 版本）。
 
 ### Windows
 
@@ -58,7 +58,7 @@ irm https://ghfast.top/https://raw.githubusercontent.com/ProjectAILeap/claude-co
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-安装过程中会提示选择安装方式：`[1] Native Install`（推荐）、`[2] winget` 或 `[3] npm`。
+安装过程中会先选择安装产品：`[1] Claude Code (CLI)` / `[2] Claude Desktop App` / `[3] Both`，然后选择 CLI 安装方式：`[1] Native Install`（推荐）、`[2] winget` 或 `[3] npm`。
 
 ---
 
@@ -213,6 +213,7 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1
 - `~/.claude/` 配置目录 / `~/.claude.json`
 - `~/.claude/downloads` 缓存目录
 - CC Switch（若已安装）
+- Claude Desktop App（macOS: `/Applications/Claude.app`，Windows: `%LOCALAPPDATA%\Claude\`）
 - `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` 环境变量
 
 ---

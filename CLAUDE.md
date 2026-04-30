@@ -18,7 +18,8 @@
 
 ```
 detect_platform       # 平台检测（含 Rosetta 2 / musl）
-get_latest_version    # 从 GitHub API 获取最新版本号
+get_latest_version    # 从 README 解析 CLI + Desktop 最新版本号
+select_product        # 产品选择：CLI / Desktop / Both（Linux 跳过）
 check_installed_version  # claude --version 检查是否已是最新
 选择安装方式          # [1] Direct binary / [2] npm
 check_git             # 二进制方式下 Linux 检查 Git；npm 方式下检查 Git 可用性
@@ -52,6 +53,16 @@ configure_api_key     # 配置 ANTHROPIC_API_KEY
 - Windows：使用 `%APPDATA%\npm\claude.cmd`
 - Node.js 要求为 `18+`；不足时脚本会尝试自动安装后再次校验版本
 - 安装器只在自己追加 PATH 时写入 marker，卸载时仅回收带 marker 的 npm PATH，避免删除用户原有 npm 环境配置
+
+### Desktop App 安装
+
+- 仅 macOS 和 Windows 支持（Linux 无 Desktop App）
+- 版本检测：从 README 解析 `desktop-v*` 版本号（和 CLI 版本同一请求获取）
+- 下载来源：`$MIRROR/ProjectAILeap/claude-code-releases/releases/download/desktop-v$VERSION/{filename}`
+- 校验：`sha256sums.txt`（同一 release 中）
+- macOS 安装：`hdiutil attach` → `cp -R *.app /Applications/` → `hdiutil detach` → `xattr -cr`
+- Windows 安装：运行 `ClaudeSetup-{ver}-{platform}.exe`（Squirrel，无需管理员权限）
+- 只装 Desktop 时跳过 Git 检查、CC Switch、API Key 配置
 
 ### 安装模式
 
@@ -96,6 +107,7 @@ configure_api_key     # 配置 ANTHROPIC_API_KEY
 | 自动更新 | 有（via claude install） | 正常路径有，降级路径无 |
 | 安装策略 | 固定官方路径 | `claude install` + 自动 fallback，支持 `CLAUDE_INSTALL_MODE` |
 | PATH 修复 | 官方脚本处理 | 成功/失败后都补 PATH；macOS 优先写 `~/.zprofile` / `~/.bash_profile` |
+| Desktop App | 无 | macOS / Windows 安装支持 |
 
 ## 测试
 

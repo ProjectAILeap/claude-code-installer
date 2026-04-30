@@ -35,8 +35,8 @@ bash tests/test.sh 5 6 7
 ```
 
 `test.sh` 当前覆盖点：
-- 第 2 层：`detect_platform`、`get_latest_version`、`check_installed_version`、`select_mirror`、`_mirror_label`
-- 第 3 层：GCS 失败降级、全部下载失败、非法 `TARGET` 参数、npm 安装路径（binary / PATH / marker）
+- 第 2 层：`detect_platform`、`get_latest_version`（README 解析 CLI + Desktop 版本）、`check_installed_version`、`select_mirror`、`_mirror_label`
+- 第 3 层：GCS 失败降级、全部下载失败、非法 `TARGET` 参数、npm 安装路径（binary / PATH / marker）、`select_product` 产品选择（Linux 跳过 / Desktop 版本为空）
 - 第 7 层：原生卸载、未安装时卸载、npm 卸载（package / PATH / marker）
 
 ---
