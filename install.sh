@@ -35,6 +35,10 @@ INSTALL_DIR=""      # set by detect_install_dir, used only in fallback
 CLAUDE_BIN=""       # full path to installed claude binary (may not be in PATH)
 INSTALL_METHOD=""   # "official" or "fallback"
 DESKTOP_VERSION=""
+INSTALL_CLI=true
+INSTALL_DESKTOP=false
+# shellcheck disable=SC2034
+DESKTOP_FILE=""
 PATH_RC_FILE=""     # shell rc/profile file updated for PATH
 MIRROR_ORDER=()  # all reachable sources sorted by latency (GCS + GitHub)
 GITHUB_MIRROR="" # fastest GitHub mirror (CC Switch only)
@@ -850,6 +854,12 @@ install_cc_switch_linux() {
     fi
 }
 
+# ── Desktop App detection ────────────────────────────────────────────────
+# placeholder — replaced in Task 3
+is_desktop_installed() { return 1; }
+download_desktop() { :; }
+install_desktop() { :; }
+
 # ── CC Switch already-installed detection ─────────────────────────────────
 is_cc_switch_installed() {
     if [[ "${PLATFORM}" == darwin-* ]]; then
@@ -1135,6 +1145,46 @@ print_done() {
     fi
 }
 
+# ── Product selection ────────────────────────────────────────────────────
+select_product() {
+    if [[ "${PLATFORM}" != darwin-* ]]; then
+        INSTALL_CLI=true
+        INSTALL_DESKTOP=false
+        return
+    fi
+
+    if [[ -z "${DESKTOP_VERSION:-}" ]]; then
+        warn "Could not detect Desktop App version, only CLI available."
+        INSTALL_CLI=true
+        INSTALL_DESKTOP=false
+        return
+    fi
+
+    printf "\n${BOLD}What would you like to install?${NC}\n"
+    printf "  [1] Claude Code (CLI)\n"
+    printf "  [2] Claude Desktop App\n"
+    printf "  [3] Both\n"
+    printf "\n"
+    local product_choice="1"
+    [ -t 0 ] && { printf "Enter choice [1]: "; read -r product_choice </dev/tty || true; }
+    [[ -z "$product_choice" ]] && product_choice="1"
+
+    case "$product_choice" in
+        2)
+            INSTALL_CLI=false
+            INSTALL_DESKTOP=true
+            ;;
+        3)
+            INSTALL_CLI=true
+            INSTALL_DESKTOP=true
+            ;;
+        *)
+            INSTALL_CLI=true
+            INSTALL_DESKTOP=false
+            ;;
+    esac
+}
+
 # ── Entry point ───────────────────────────────────────────────────────────
 main() {
     printf "\n${BOLD}${CYAN}━━━ Claude Code Installer ━━━${NC}  ProjectAILeap\n"
@@ -1142,57 +1192,94 @@ main() {
 
     detect_platform
     get_latest_version
-    check_installed_version
+    select_product
 
-    if [[ "$INSTALLED_VERSION" == "$VERSION" ]]; then
-        ok "Claude Code v${VERSION} is already up to date."
-        # Binary found via known path but not in PATH — fix it now
-        if [[ -n "$CLAUDE_BIN" ]] && ! command -v claude &>/dev/null; then
-            INSTALL_DIR="$(dirname "$CLAUDE_BIN")"
-            setup_path
+    if $INSTALL_CLI; then
+        check_installed_version
+
+        if [[ "$INSTALLED_VERSION" == "$VERSION" ]]; then
+            ok "Claude Code v${VERSION} is already up to date."
+            if [[ -n "$CLAUDE_BIN" ]] && ! command -v claude &>/dev/null; then
+                INSTALL_DIR="$(dirname "$CLAUDE_BIN")"
+                setup_path
+            fi
         fi
-        # Check CC Switch even when Claude is already up to date
-        if is_cc_switch_installed; then
-            ok "CC Switch is already installed."
-            CC_SWITCH_INSTALLED=true
+    fi
+
+    local cli_needs_install=false
+    if $INSTALL_CLI && [[ "${INSTALLED_VERSION:-}" != "$VERSION" ]]; then
+        cli_needs_install=true
+        if [[ -n "$INSTALLED_VERSION" ]]; then
+            info "Upgrading: v${INSTALLED_VERSION} → v${VERSION}"
         else
-            TMP_DIR="$(mktemp -d)"
-            trap 'rm -rf "${TMP_DIR}"' EXIT
-            install_cc_switch_prompt
+            info "Installing Claude Code v${VERSION}"
         fi
-        configure_api_key
+    fi
+
+    local desktop_needs_install=false
+    if $INSTALL_DESKTOP; then
+        if is_desktop_installed; then
+            printf "\n"
+            printf "${BOLD}Desktop App is already installed. Overwrite?${NC} [y/N] "
+            local reply="n"
+            [ -t 0 ] && read -r reply </dev/tty || reply="n"
+            [[ "$reply" =~ ^[Yy] ]] && desktop_needs_install=true
+        else
+            desktop_needs_install=true
+        fi
+    fi
+
+    if ! $cli_needs_install && ! $desktop_needs_install; then
+        if $INSTALL_CLI; then
+            if is_cc_switch_installed; then
+                ok "CC Switch is already installed."
+                CC_SWITCH_INSTALLED=true
+            else
+                TMP_DIR="$(mktemp -d)"
+                trap 'rm -rf "${TMP_DIR}"' EXIT
+                install_cc_switch_prompt
+            fi
+            configure_api_key
+        fi
         print_done
         exit 0
     fi
 
-    if [[ -n "$INSTALLED_VERSION" ]]; then
-        info "Upgrading: v${INSTALLED_VERSION} → v${VERSION}"
-    else
-        info "Installing Claude Code v${VERSION}"
-    fi
-
-    # Method selection
-    printf "\n${BOLD}Select install method:${NC}\n"
-    printf "  [1] Direct binary (Recommended) — downloads official binary, verifies SHA-256\n"
-    printf "  [2] npm (via npmmirror)          — installs via npm registry\n"
-    printf "\n"
-    local method_choice="1"
-    [ -t 0 ] && { printf "Enter choice [1]: "; read -r method_choice </dev/tty || true; }
-    [[ -z "$method_choice" ]] && method_choice="1"
-
     TMP_DIR="$(mktemp -d)"
     trap 'rm -rf "${TMP_DIR}"' EXIT
 
-    if [[ "$method_choice" == "2" ]]; then
-        install_via_npm
-    else
-        check_git
-        select_mirror
-        download_and_verify
-        run_claude_install
+    if $cli_needs_install; then
+        printf "\n${BOLD}Select install method:${NC}\n"
+        printf "  [1] Direct binary (Recommended) — downloads official binary, verifies SHA-256\n"
+        printf "  [2] npm (via npmmirror)          — installs via npm registry\n"
+        printf "\n"
+        local method_choice="1"
+        [ -t 0 ] && { printf "Enter choice [1]: "; read -r method_choice </dev/tty || true; }
+        [[ -z "$method_choice" ]] && method_choice="1"
+
+        if [[ "$method_choice" == "2" ]]; then
+            install_via_npm
+        else
+            check_git
+            select_mirror
+            download_and_verify
+            run_claude_install
+        fi
     fi
-    install_cc_switch_prompt
-    configure_api_key
+
+    if $desktop_needs_install; then
+        if [[ -z "${GITHUB_MIRROR}" ]] || [[ ${#MIRROR_ORDER[@]} -eq 0 ]]; then
+            select_mirror
+        fi
+        download_desktop
+        install_desktop
+    fi
+
+    if $INSTALL_CLI; then
+        install_cc_switch_prompt
+        configure_api_key
+    fi
+
     print_done
 }
 
