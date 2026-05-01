@@ -65,6 +65,9 @@ $MIRRORS = @(
     "https://hub.gitmirror.com/https://github.com"
 )
 
+$PREFERRED_MIRROR = "https://ghfast.top/https://github.com"
+$MIRROR_TIE_MS = 1000
+
 # -- Output --------------------------------------------------------------------
 function Write-Step { param($msg) Write-Host "`n>> $msg" -ForegroundColor Cyan }
 function Write-Info { param($msg) Write-Host "  [INFO]  $msg" -ForegroundColor Gray }
@@ -230,15 +233,22 @@ function Select-Mirror {
     Write-Host ""
 
     if ($reachable.Count -gt 0) {
+        # If ghfast.top is close to the fastest source, prefer it. Direct
+        # github.com can win a header probe by a small margin but still be the
+        # less reliable choice for real downloads in mainland-China networks.
         $best = $reachable[0]
+        $preferred = @($reachable | Where-Object { $_.Mirror -eq $PREFERRED_MIRROR } | Select-Object -First 1)
+        if ($preferred.Count -gt 0 -and ($preferred[0].Ms - $best.Ms) -le $MIRROR_TIE_MS) {
+            $best = $preferred[0]
+        }
         $global:SelectedMirror = $best.Mirror
         $global:GithubMirror   = $best.Mirror
         $global:IsGCS          = $false
         $tag = $best.Mirror -replace 'https://([^/]+)(/.*)?$','$1'
         Write-Ok "Selected: $tag ($($best.Ms) ms)"
     } else {
-        $global:SelectedMirror = "https://ghfast.top/https://github.com"
-        $global:GithubMirror   = "https://ghfast.top/https://github.com"
+        $global:SelectedMirror = $PREFERRED_MIRROR
+        $global:GithubMirror   = $PREFERRED_MIRROR
         $global:IsGCS          = $false
         Write-Warn "All mirror checks timed out. Defaulting to ghfast.top."
     }
@@ -247,46 +257,76 @@ function Select-Mirror {
 function Get-DownloadUrl {
     param([string]$Path)
     # Always use a GitHub mirror (GCS does not host CC Switch / Git releases)
-    $mirror = if ($global:GithubMirror) { $global:GithubMirror } else { "https://github.com" }
+    $mirror = if ($global:GithubMirror) { $global:GithubMirror } else { $PREFERRED_MIRROR }
     return "$mirror$Path"
 }
 
 # -- Fetch latest version ------------------------------------------------------
 function Get-LatestVersion {
     Write-Step "Fetching latest Claude Code version..."
-    $apiUrl = "https://api.github.com/repos/$RELEASES_REPO/releases/latest"
     $ver = ""
 
-    try {
-        $resp = Invoke-RestMethod -Uri $apiUrl -TimeoutSec 12 `
-            -Headers @{ Accept = "application/vnd.github.v3+json" } `
-            -ErrorAction Stop
-        $ver = $resp.tag_name -replace '^v', ''
-    } catch {
-        Write-Info "GitHub API unavailable, trying fallback..."
+    $readmeUrls = @(
+        "$PREFERRED_MIRROR/$RELEASES_REPO/raw/main/README.md",
+        "https://raw.githubusercontent.com/$RELEASES_REPO/main/README.md",
+        "https://github.com/$RELEASES_REPO/raw/main/README.md"
+    ) | Select-Object -Unique
+
+    $readme = ""
+    foreach ($url in $readmeUrls) {
+        try {
+            $resp = Invoke-WebRequest -Uri $url -TimeoutSec 15 -UseBasicParsing -ErrorAction Stop
+            $readme = $resp.Content
+            break
+        } catch {}
+    }
+
+    if ($readme -and $readme -match 'releases/tag/v(\d+\.\d+\.\d+)') {
+        $ver = $Matches[1]
     }
 
     if (-not $ver) {
-        try {
-            $fallbackUrl = "https://github.com/$RELEASES_REPO/releases/latest"
-            $resp = Invoke-WebRequest -Uri $fallbackUrl -Method Head `
-                -TimeoutSec 10 -UseBasicParsing -MaximumRedirection 0 `
-                -ErrorAction SilentlyContinue
-            $locationHdr = $resp.Headers["Location"]
-            $location = if ($null -ne $locationHdr) { $locationHdr } else { "" }
-            if ($location -match '(\d+\.\d+\.\d+)') { $ver = $Matches[1] }
-        } catch {
-            if ($_.Exception.Response) {
-                $loc = $_.Exception.Response.Headers.Location
-                if ($loc -and "$loc" -match '(\d+\.\d+\.\d+)') { $ver = $Matches[1] }
+        Write-Info "README unavailable, trying API fallback..."
+        $apiUrls = @(
+            "https://ghfast.top/https://api.github.com/repos/$RELEASES_REPO/releases?per_page=20",
+            "https://api.github.com/repos/$RELEASES_REPO/releases?per_page=20"
+        )
+        foreach ($apiUrl in $apiUrls) {
+            try {
+                $releases = Invoke-RestMethod -Uri $apiUrl `
+                    -TimeoutSec 15 -Headers @{ Accept = "application/vnd.github.v3+json" } -ErrorAction Stop
+                foreach ($r in $releases) {
+                    if ($r.tag_name -match '^v(\d+\.\d+\.\d+)$') {
+                        $ver = $Matches[1]
+                        break
+                    }
+                }
+                if ($ver) { break }
+            } catch {}
+        }
+    }
+
+    if (-not $ver) {
+        Write-Info "API unavailable, trying releases page fallback..."
+        foreach ($releasesUrl in @("$PREFERRED_MIRROR/$RELEASES_REPO/releases", "https://github.com/$RELEASES_REPO/releases")) {
+            try {
+                $resp = Invoke-WebRequest -Uri $releasesUrl -Method Head `
+                    -TimeoutSec 10 -UseBasicParsing -MaximumRedirection 0 -ErrorAction SilentlyContinue
+                $location = $resp.Headers["Location"]
+                if ($location -and "$location" -match '/v(\d+\.\d+\.\d+)') { $ver = $Matches[1]; break }
+            } catch {
+                if ($_.Exception.Response) {
+                    $loc = $_.Exception.Response.Headers.Location
+                    if ($loc -and "$loc" -match '/v(\d+\.\d+\.\d+)') { $ver = $Matches[1]; break }
+                }
             }
         }
     }
 
     if (-not $ver) {
-        Exit-WithError "Cannot determine latest version. Check network connectivity."
+        Exit-WithError "Cannot determine latest Claude Code CLI version. Check network connectivity."
     }
-    Write-Info "Latest: v$ver"
+    Write-Info "CLI: v$ver"
     return $ver
 }
 

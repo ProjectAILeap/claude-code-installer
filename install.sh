@@ -238,6 +238,9 @@ MIRRORS=(
     "https://hub.gitmirror.com/https://github.com"
 )
 
+PREFERRED_MIRROR="https://ghfast.top/https://github.com"
+MIRROR_TIE_MS=1000
+
 _mirror_label() {
     local m="$1"
     case "$m" in
@@ -274,24 +277,49 @@ select_mirror() {
     done
     wait  # all probes finish within --max-time 10s
 
-    # Collect results sorted by latency into MIRROR_ORDER
+    # Collect results sorted by latency into MIRROR_ORDER.  If ghfast.top is
+    # close enough to the fastest source, prefer it: in mainland-China networks
+    # direct github.com often wins tiny probe races but loses real downloads.
     MIRROR_ORDER=()
     GITHUB_MIRROR=""
-    local f mirror ms
+    local files=()
     # shellcheck disable=SC2012  # filenames are digits+underscore, ls is safe here
-    while IFS= read -r f; do
+    while IFS= read -r f; do files+=("$f"); done < <(ls "${result_dir}" 2>/dev/null | sort)
+
+    local f mirror ms best_ms ghfast_file ghfast_ms ordered_files=()
+    if [[ ${#files[@]} -gt 0 ]]; then
+        best_ms="${files[0]%%_*}"
+        best_ms=$((10#$best_ms))
+        for f in "${files[@]}"; do
+            mirror="$(cat "${result_dir}/${f}")"
+            if [[ "$mirror" == "$PREFERRED_MIRROR" ]]; then
+                ghfast_file="$f"
+                ghfast_ms="${f%%_*}"
+                ghfast_ms=$((10#$ghfast_ms))
+                break
+            fi
+        done
+        if [[ -n "${ghfast_file:-}" ]] && (( ghfast_ms - best_ms <= MIRROR_TIE_MS )); then
+            ordered_files+=("$ghfast_file")
+            for f in "${files[@]}"; do [[ "$f" != "$ghfast_file" ]] && ordered_files+=("$f"); done
+        else
+            ordered_files=("${files[@]}")
+        fi
+    fi
+
+    for f in "${ordered_files[@]}"; do
         mirror="$(cat "${result_dir}/${f}")"
         ms="${f%%_*}"
         ms=$((10#$ms))
         info "  $(_mirror_label "$mirror"): ${ms}ms"
         MIRROR_ORDER+=("$mirror")
         [[ -z "$GITHUB_MIRROR" ]] && [[ "$mirror" != "$GCS_BUCKET" ]] && GITHUB_MIRROR="$mirror"
-    done < <(ls "${result_dir}" 2>/dev/null | sort)
+    done
 
     rm -rf "${result_dir}"
 
     [[ ${#MIRROR_ORDER[@]} -gt 0 ]] || die "All mirrors failed. Please check your network connection."
-    [[ -n "$GITHUB_MIRROR" ]] || GITHUB_MIRROR="https://github.com"
+    [[ -n "$GITHUB_MIRROR" ]] || GITHUB_MIRROR="$PREFERRED_MIRROR"
 
     ok "Best: $(_mirror_label "${MIRROR_ORDER[0]}")"
 }
@@ -304,29 +332,57 @@ make_download_url() {
 # ── Fetch latest version ──────────────────────────────────────────────────
 get_latest_version() {
     step "Fetching latest version..."
-    local api_url="https://api.github.com/repos/${RELEASES_REPO}/releases/latest"
-    local response
+    VERSION=""
 
-    response="$(curl -sf --connect-timeout 8 --max-time 15 \
-        -H "Accept: application/vnd.github.v3+json" \
-        "$api_url" 2>/dev/null || true)"
+    local readme=""
+    local readme_urls=(
+        "${GITHUB_MIRROR:-$PREFERRED_MIRROR}/${RELEASES_REPO}/raw/main/README.md"
+        "${PREFERRED_MIRROR}/${RELEASES_REPO}/raw/main/README.md"
+        "https://raw.githubusercontent.com/${RELEASES_REPO}/main/README.md"
+        "https://github.com/${RELEASES_REPO}/raw/main/README.md"
+    )
 
-    if [[ -n "$response" ]]; then
-        VERSION="$(printf '%s' "$response" | grep '"tag_name"' | head -1 | \
-            sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/')"
+    local url
+    for url in "${readme_urls[@]}"; do
+        readme="$(curl -sf --connect-timeout 8 --max-time 15 "$url" 2>/dev/null || true)"
+        [[ -n "$readme" ]] && break
+    done
+
+    if [[ -n "$readme" ]]; then
+        VERSION="$(printf '%s' "$readme" | grep -oE 'releases/tag/v[0-9]+\.[0-9]+\.[0-9]+' | grep -v desktop | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
     fi
 
     if [[ -z "${VERSION:-}" ]]; then
-        info "GitHub API unavailable, trying fallback..."
-        local location
-        location="$(curl -sI --connect-timeout 8 --max-time 12 \
-            "https://github.com/${RELEASES_REPO}/releases/latest" 2>/dev/null | \
-            grep -i '^location:' | tr -d '\r' | awk '{print $2}')"
-        VERSION="$(printf '%s' "$location" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+        info "README unavailable, trying API fallback..."
+        local api_response api_url
+        for api_url in \
+            "https://ghfast.top/https://api.github.com/repos/${RELEASES_REPO}/releases?per_page=20" \
+            "https://api.github.com/repos/${RELEASES_REPO}/releases?per_page=20"; do
+            api_response="$(curl -sf --connect-timeout 8 --max-time 15 \
+                -H "Accept: application/vnd.github.v3+json" \
+                "$api_url" 2>/dev/null || true)"
+            [[ -n "$api_response" ]] && break
+        done
+
+        if [[ -n "${api_response:-}" ]]; then
+            VERSION="$(printf '%s' "$api_response" | grep '"tag_name"' | grep -v desktop | head -1 | \
+                sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\([^"]*\)".*/\1/')"
+        fi
     fi
 
-    [[ -n "${VERSION:-}" ]] || die "Cannot determine latest version. Check network."
-    info "Latest: v${VERSION}"
+    if [[ -z "${VERSION:-}" ]]; then
+        info "API unavailable, trying releases page fallback..."
+        local location
+        for url in "${PREFERRED_MIRROR}/${RELEASES_REPO}/releases" "https://github.com/${RELEASES_REPO}/releases"; do
+            location="$(curl -sI --connect-timeout 8 --max-time 12 "$url" 2>/dev/null | \
+                grep -i '^location:' | tr -d '\r' | awk '{print $2}')"
+            VERSION="$(printf '%s' "$location" | grep -oE '/v[0-9]+\.[0-9]+\.[0-9]+' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+            [[ -n "${VERSION:-}" ]] && break
+        done
+    fi
+
+    [[ -n "${VERSION:-}" ]] || die "Cannot determine latest CLI version. Check network."
+    info "CLI: v${VERSION}"
 }
 
 # ── Version check ─────────────────────────────────────────────────────────
